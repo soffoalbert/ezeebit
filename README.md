@@ -61,6 +61,24 @@ curl $B/merchants/1/withdrawals/$WID
 curl "$B/merchants/1/accounts/USDT/ledger"
 ```
 
+## Postman collection
+
+A ready-to-run collection lives in [`postman/`](postman/):
+
+- `postman/ezeebit-wallet.postman_collection.json` — every endpoint with happy-path and
+  error/edge cases (idempotency replay & conflict, quote reuse, insufficient funds, over-limit,
+  invalid destination, missing header), chained via variables (`quoteId`, `withdrawalId`, …) and
+  with test assertions on status codes and RFC-7807 `code`s.
+- `postman/ezeebit-local.postman_environment.json` — points at `http://localhost:8080`, merchant `1`.
+
+Import both into Postman and run the folders top-to-bottom, or from the CLI with
+[Newman](https://github.com/postmanlabs/newman):
+
+```bash
+npx newman run postman/ezeebit-wallet.postman_collection.json \
+  -e postman/ezeebit-local.postman_environment.json
+```
+
 ## API
 
 All mutating money endpoints require an `Idempotency-Key` header; retrying with the same key

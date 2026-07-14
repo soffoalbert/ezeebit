@@ -1,0 +1,569 @@
+{
+  "info": {
+    "name": "Ezeebit Wallet API",
+    "_postman_id": "e2ee-b17c-4a11-9f00-ezeebitwallet1",
+    "description": "Comprehensive tests for the Ezeebit merchant wallet (hold / convert / withdraw).\n\nHow to use:\n1. Start the app: `docker compose up -d` then `mvn spring-boot:run` (see README.md). It listens on http://localhost:8080 and seeds merchants 1 and 2.\n2. Import this collection and the `ezeebit-local` environment (or rely on the built-in collection variables).\n3. Run the folders top-to-bottom (or use the Collection Runner). Requests chain via collection variables (quoteId, withdrawalId, payoutReference, ledgerCursor).\n\nConventions:\n- Seed deposits use fixed Idempotency-Keys so re-running the collection stays idempotent (no runaway balances).\n- Happy-path conversions/withdrawals generate a fresh Idempotency-Key per run via a pre-request script, so they are repeatable; the paired 'replay' request reuses that same key to prove idempotency.\n- Error-path requests assert the RFC-7807 `code` and HTTP status.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:8080" },
+    { "key": "merchantId", "value": "1" },
+    { "key": "quoteId", "value": "" },
+    { "key": "conversionId", "value": "" },
+    { "key": "conversionKey", "value": "" },
+    { "key": "withdrawalId", "value": "" },
+    { "key": "withdrawalKey", "value": "" },
+    { "key": "payoutReference", "value": "" },
+    { "key": "ledgerCursor", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Task 1 · Balances & Deposits",
+      "item": [
+        {
+          "name": "Deposit — seed USDT (idempotent)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "pm.test('returns USDT balance', () => {",
+              "  const b = pm.response.json();",
+              "  pm.expect(b.currency).to.eql('USDT');",
+              "  pm.expect(Number(b.balance)).to.be.a('number');",
+              "});"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "seed-usdt-001" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"currency\": \"USDT\", \"amount\": \"1000.000000\", \"reference\": \"seed\" }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/deposits", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "deposits"] },
+            "description": "Deposit funds (Task 1). The fixed Idempotency-Key makes re-runs safe: a replay returns the original result instead of crediting again."
+          }
+        },
+        {
+          "name": "Deposit — seed ZAR (idempotent)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "pm.test('returns ZAR balance', () => pm.expect(pm.response.json().currency).to.eql('ZAR'));"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "seed-zar-001" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"currency\": \"ZAR\", \"amount\": \"5000.00\", \"reference\": \"seed\" }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/deposits", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "deposits"] }
+          }
+        },
+        {
+          "name": "Get balances",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "pm.test('is a list of balances', () => {",
+              "  const list = pm.response.json();",
+              "  pm.expect(list).to.be.an('array');",
+              "  pm.expect(list.length).to.be.above(0);",
+              "  pm.expect(list[0]).to.have.property('currency');",
+              "  pm.expect(list[0]).to.have.property('balance');",
+              "});"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/balances", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "balances"] },
+            "description": "All balances the merchant holds (Task 1)."
+          }
+        },
+        {
+          "name": "Get ledger — first page (cursor)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "const page = pm.response.json();",
+              "pm.test('has entries + nextCursor shape', () => {",
+              "  pm.expect(page).to.have.property('entries');",
+              "  pm.expect(page).to.have.property('nextCursor');",
+              "});",
+              "pm.test('entries carry running balance_after', () => {",
+              "  if (page.entries.length) pm.expect(page.entries[0]).to.have.property('balanceAfter');",
+              "});",
+              "pm.collectionVariables.set('ledgerCursor', page.nextCursor || '');"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/merchants/{{merchantId}}/accounts/USDT/ledger?limit=5",
+              "host": ["{{baseUrl}}"],
+              "path": ["merchants", "{{merchantId}}", "accounts", "USDT", "ledger"],
+              "query": [ { "key": "limit", "value": "5" } ]
+            },
+            "description": "Audit history for the USDT account, newest first (Task 1). Keyset pagination: the response `nextCursor` is captured for the next page."
+          }
+        },
+        {
+          "name": "Get ledger — next page (uses cursor)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "pm.test('respects the cursor (ids strictly older)', () => {",
+              "  const page = pm.response.json();",
+              "  pm.expect(page).to.have.property('entries');",
+              "});"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/merchants/{{merchantId}}/accounts/USDT/ledger?limit=5&before={{ledgerCursor}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["merchants", "{{merchantId}}", "accounts", "USDT", "ledger"],
+              "query": [ { "key": "limit", "value": "5" }, { "key": "before", "value": "{{ledgerCursor}}" } ]
+            },
+            "description": "Fetch older entries using the cursor from the previous page. If nextCursor was empty, `before=` is ignored and the first page is returned."
+          }
+        },
+        {
+          "name": "Deposit — idempotent replay (1st call)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "pm.collectionVariables.set('replayBalance', pm.response.json().balance);"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "idem-demo-001" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"currency\": \"KES\", \"amount\": \"250.00\" }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/deposits", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "deposits"] },
+            "description": "First call of an idempotency demo. The next request replays the same key and must return the identical result with no second credit."
+          }
+        },
+        {
+          "name": "Deposit — idempotent replay (2nd call, same key)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "pm.test('same balance as first call (no double credit)', () => {",
+              "  pm.expect(String(pm.response.json().balance)).to.eql(String(pm.collectionVariables.get('replayBalance')));",
+              "});"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "idem-demo-001" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"currency\": \"KES\", \"amount\": \"250.00\" }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/deposits", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "deposits"] }
+          }
+        },
+        {
+          "name": "Deposit — key conflict (same key, different body) → 422",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('422 Unprocessable', () => pm.response.to.have.status(422));",
+              "pm.test('code = IDEMPOTENCY_CONFLICT', () => pm.expect(pm.response.json().code).to.eql('IDEMPOTENCY_CONFLICT'));"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "idem-demo-001" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"currency\": \"KES\", \"amount\": \"999.00\" }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/deposits", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "deposits"] },
+            "description": "Reusing an idempotency key with a different body is rejected — retries must be identical."
+          }
+        },
+        {
+          "name": "Deposit — missing Idempotency-Key → 400",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+              "pm.test('code = MISSING_HEADER', () => pm.expect(pm.response.json().code).to.eql('MISSING_HEADER'));"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{ \"currency\": \"ZAR\", \"amount\": \"10.00\" }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/deposits", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "deposits"] },
+            "description": "Mutating money endpoints require an Idempotency-Key header."
+          }
+        },
+        {
+          "name": "Deposit — invalid amount (negative) → 400",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+              "pm.test('code = VALIDATION_FAILED', () => pm.expect(pm.response.json().code).to.eql('VALIDATION_FAILED'));"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"currency\": \"ZAR\", \"amount\": \"-5.00\" }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/deposits", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "deposits"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Task 2 · Conversions",
+      "item": [
+        {
+          "name": "Create quote (USDT → ZAR)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "const q = pm.response.json();",
+              "pm.test('quote has id, rate, expiry', () => {",
+              "  pm.expect(q).to.have.property('quoteId');",
+              "  pm.expect(q).to.have.property('rate');",
+              "  pm.expect(q).to.have.property('expiresAt');",
+              "});",
+              "pm.collectionVariables.set('quoteId', q.quoteId);"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{ \"fromCurrency\": \"USDT\", \"toCurrency\": \"ZAR\", \"amount\": \"100.000000\" }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/conversions/quotes", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "conversions", "quotes"] },
+            "description": "Get a rate quote locked for a short TTL (Task 2). The quoteId is captured for execution."
+          }
+        },
+        {
+          "name": "Execute conversion (uses quoteId)",
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "// Fresh idempotency key each run; the replay request reuses this same value.",
+              "pm.collectionVariables.set('conversionKey', pm.variables.replaceIn('{{$guid}}'));"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "const c = pm.response.json();",
+              "pm.test('status EXECUTED', () => pm.expect(c.status).to.eql('EXECUTED'));",
+              "pm.collectionVariables.set('conversionId', c.conversionId);"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{conversionKey}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"quoteId\": \"{{quoteId}}\" }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/conversions", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "conversions"] },
+            "description": "Execute against the exact quoted rate (Task 2). Debits USDT, credits ZAR atomically."
+          }
+        },
+        {
+          "name": "Execute conversion — idempotent replay (same key)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "pm.test('same conversionId (no second conversion)', () => {",
+              "  pm.expect(pm.response.json().conversionId).to.eql(pm.collectionVariables.get('conversionId'));",
+              "});"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{conversionKey}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"quoteId\": \"{{quoteId}}\" }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/conversions", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "conversions"] },
+            "description": "Replaying the same Idempotency-Key returns the original conversion — no double execution."
+          }
+        },
+        {
+          "name": "Execute conversion — reuse spent quote (new key) → 409",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+              "pm.test('code = QUOTE_ALREADY_USED', () => pm.expect(pm.response.json().code).to.eql('QUOTE_ALREADY_USED'));"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"quoteId\": \"{{quoteId}}\" }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/conversions", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "conversions"] },
+            "description": "A quote is single-use even with a different idempotency key: the quote state machine rejects the second execution."
+          }
+        },
+        {
+          "name": "Create quote — same currency → 400",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+              "pm.test('code = INVALID_REQUEST', () => pm.expect(pm.response.json().code).to.eql('INVALID_REQUEST'));"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{ \"fromCurrency\": \"USDT\", \"toCurrency\": \"USDT\", \"amount\": \"10.000000\" }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/conversions/quotes", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "conversions", "quotes"] },
+            "description": "Cannot convert a currency into itself."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Task 3 · Withdrawals",
+      "item": [
+        {
+          "name": "Request withdrawal (100 USDT)",
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "pm.collectionVariables.set('withdrawalKey', pm.variables.replaceIn('{{$guid}}'));"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+              "const w = pm.response.json();",
+              "pm.test('status PENDING and holds funds', () => pm.expect(w.status).to.eql('PENDING'));",
+              "pm.collectionVariables.set('withdrawalId', w.withdrawalId);",
+              "// The stub rail derives its reference deterministically from the id.",
+              "pm.collectionVariables.set('payoutReference', 'payout_' + w.withdrawalId);"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{withdrawalKey}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"currency\": \"USDT\", \"amount\": \"100.000000\", \"destination\": { \"chain\": \"tron\", \"address\": \"chain-address-000111\" } }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/withdrawals", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "withdrawals"] },
+            "description": "Request a payout (Task 3). Funds are held immediately; settlement is asynchronous via the payout rail."
+          }
+        },
+        {
+          "name": "Request withdrawal — duplicate key (same id)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+              "pm.test('same withdrawalId (no second hold)', () => {",
+              "  pm.expect(pm.response.json().withdrawalId).to.eql(pm.collectionVariables.get('withdrawalId'));",
+              "});"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{withdrawalKey}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"currency\": \"USDT\", \"amount\": \"100.000000\", \"destination\": { \"chain\": \"tron\", \"address\": \"chain-address-000111\" } }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/withdrawals", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "withdrawals"] },
+            "description": "The flaky-mobile double-tap: the same Idempotency-Key returns the original withdrawal, holding funds once."
+          }
+        },
+        {
+          "name": "Get withdrawal status",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "const w = pm.response.json();",
+              "pm.test('has a status', () => pm.expect(['PENDING','SUBMITTED','COMPLETED','FAILED']).to.include(w.status));",
+              "if (w.payoutReference) pm.collectionVariables.set('payoutReference', w.payoutReference);",
+              "console.log('withdrawal status:', w.status, 'ref:', w.payoutReference);"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/withdrawals/{{withdrawalId}}", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "withdrawals", "{{withdrawalId}}"] },
+            "description": "Poll a withdrawal. Within ~1s the stub rail settles it to COMPLETED (default config). Captures payoutReference for the manual callback demo."
+          }
+        },
+        {
+          "name": "Withdrawal — insufficient funds (NGN) → 422",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('422 Unprocessable', () => pm.response.to.have.status(422));",
+              "pm.test('code = INSUFFICIENT_FUNDS', () => pm.expect(pm.response.json().code).to.eql('INSUFFICIENT_FUNDS'));"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"currency\": \"NGN\", \"amount\": \"100.00\", \"destination\": { \"accountNumber\": \"12345678\", \"bankCode\": \"ABC\" } }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/withdrawals", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "withdrawals"] },
+            "description": "Merchant 1 holds no NGN, so this cannot be paid out. A merchant can never withdraw money they don't have."
+          }
+        },
+        {
+          "name": "Withdrawal — over per-withdrawal limit → 422",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('422 Unprocessable', () => pm.response.to.have.status(422));",
+              "pm.test('code = WITHDRAWAL_LIMIT_EXCEEDED', () => pm.expect(pm.response.json().code).to.eql('WITHDRAWAL_LIMIT_EXCEEDED'));"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"currency\": \"USDT\", \"amount\": \"6000.000000\", \"destination\": { \"chain\": \"tron\", \"address\": \"chain-address-000111\" } }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/withdrawals", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "withdrawals"] },
+            "description": "Merchant 1 is seeded with a 5,000 USDT per-withdrawal cap; 6,000 is rejected before any funds are held."
+          }
+        },
+        {
+          "name": "Withdrawal — invalid destination (no address) → 422",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('422 Unprocessable', () => pm.response.to.have.status(422));",
+              "pm.test('code = INVALID_DESTINATION', () => pm.expect(pm.response.json().code).to.eql('INVALID_DESTINATION'));"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{$guid}}" }
+            ],
+            "body": { "mode": "raw", "raw": "{ \"currency\": \"USDT\", \"amount\": \"10.000000\", \"destination\": { \"bankCode\": \"ABC\" } }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/withdrawals", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "withdrawals"] },
+            "description": "Stablecoin payouts require a blockchain `address`; fiat requires `accountNumber` + `bankCode`. Malformed destinations are rejected up front."
+          }
+        },
+        {
+          "name": "Withdrawal — missing Idempotency-Key → 400",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('400 Bad Request', () => pm.response.to.have.status(400));",
+              "pm.test('code = MISSING_HEADER', () => pm.expect(pm.response.json().code).to.eql('MISSING_HEADER'));"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{ \"currency\": \"USDT\", \"amount\": \"10.000000\", \"destination\": { \"address\": \"chain-address-000111\" } }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/merchants/{{merchantId}}/withdrawals", "host": ["{{baseUrl}}"], "path": ["merchants", "{{merchantId}}", "withdrawals"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Internal · Payout Rail Callbacks",
+      "description": "The payout rail's settlement webhook. In this build the in-process stub rail drives this automatically ~1s after submission, so a manually-run callback may hit an already-settled withdrawal (409 ILLEGAL_WITHDRAWAL_STATE) — that guard is exactly what makes duplicate callbacks safe. To exercise it yourself, set `wallet.payout.settlement-delay-ms` high in application.yml so the withdrawal stays SUBMITTED, then fire these.",
+      "item": [
+        {
+          "name": "Payout callback — SUCCEEDED",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('204 No Content or 409 (already settled)', () => pm.expect([204, 409]).to.include(pm.response.code));"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{ \"payoutReference\": \"{{payoutReference}}\", \"outcome\": \"SUCCEEDED\" }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/internal/payout-callbacks", "host": ["{{baseUrl}}"], "path": ["internal", "payout-callbacks"] },
+            "description": "Mark the held payout as completed. Idempotent: a duplicate SUCCEEDED callback is a no-op."
+          }
+        },
+        {
+          "name": "Payout callback — FAILED (releases funds)",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('204 No Content or 409 (already settled)', () => pm.expect([204, 409]).to.include(pm.response.code));"
+            ] } }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": { "mode": "raw", "raw": "{ \"payoutReference\": \"{{payoutReference}}\", \"outcome\": \"FAILED\", \"reason\": \"manual test\" }", "options": { "raw": { "language": "json" } } },
+            "url": { "raw": "{{baseUrl}}/internal/payout-callbacks", "host": ["{{baseUrl}}"], "path": ["internal", "payout-callbacks"] },
+            "description": "Mark the payout failed; the held funds are released back to the balance via a compensating ledger entry."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Observability",
+      "item": [
+        {
+          "name": "Health",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "pm.test('status UP', () => pm.expect(pm.response.json().status).to.eql('UP'));"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/actuator/health", "host": ["{{baseUrl}}"], "path": ["actuator", "health"] }
+          }
+        },
+        {
+          "name": "Metric — wallet.ledger.entries",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "pm.test('has a COUNT measurement', () => {",
+              "  const m = pm.response.json();",
+              "  pm.expect(m.name).to.eql('wallet.ledger.entries');",
+              "  pm.expect(m.measurements[0]).to.have.property('value');",
+              "});"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/actuator/metrics/wallet.ledger.entries", "host": ["{{baseUrl}}"], "path": ["actuator", "metrics", "wallet.ledger.entries"] },
+            "description": "Count of ledger movements (tagged by type/currency). Other metrics: wallet.outbox.processed, wallet.ledger.invariant.violations (must be 0)."
+          }
+        },
+        {
+          "name": "Prometheus scrape",
+          "event": [
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('200 OK', () => pm.response.to.have.status(200));",
+              "pm.test('exposes wallet metrics', () => pm.expect(pm.response.text()).to.include('wallet_ledger_entries_total'));"
+            ] } }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": { "raw": "{{baseUrl}}/actuator/prometheus", "host": ["{{baseUrl}}"], "path": ["actuator", "prometheus"] }
+          }
+        }
+      ]
+    }
+  ]
+}
