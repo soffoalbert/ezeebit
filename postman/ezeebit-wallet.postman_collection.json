@@ -202,7 +202,7 @@
                   "pm.test('entries carry running balance_after', () => {",
                   "  if (page.entries.length) pm.expect(page.entries[0]).to.have.property('balanceAfter');",
                   "});",
-                  "pm.collectionVariables.set('ledgerCursor', page.nextCursor || '');"
+                  "pm.environment.set('ledgerCursor', page.nextCursor || '');"
                 ]
               }
             }
@@ -287,7 +287,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
-                  "pm.collectionVariables.set('replayBalance', pm.response.json().balance);"
+                  "pm.environment.set('replayBalance', pm.response.json().balance);"
                 ]
               }
             }
@@ -337,7 +337,7 @@
                 "exec": [
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
                   "pm.test('same balance as first call (no double credit)', () => {",
-                  "  pm.expect(String(pm.response.json().balance)).to.eql(String(pm.collectionVariables.get('replayBalance')));",
+                  "  pm.expect(String(pm.response.json().balance)).to.eql(String(pm.environment.get('replayBalance')));",
                   "});"
                 ]
               }
@@ -539,7 +539,7 @@
                   "  pm.expect(q).to.have.property('rate');",
                   "  pm.expect(q).to.have.property('expiresAt');",
                   "});",
-                  "pm.collectionVariables.set('quoteId', q.quoteId);"
+                  "pm.environment.set('quoteId', q.quoteId);"
                 ]
               }
             }
@@ -585,7 +585,7 @@
                 "type": "text/javascript",
                 "exec": [
                   "// Fresh idempotency key each run; the replay request reuses this same value.",
-                  "pm.collectionVariables.set('conversionKey', pm.variables.replaceIn('{{$guid}}'));"
+                  "pm.environment.set('conversionKey', pm.variables.replaceIn('{{$guid}}'));"
                 ]
               }
             },
@@ -597,7 +597,7 @@
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
                   "const c = pm.response.json();",
                   "pm.test('status EXECUTED', () => pm.expect(c.status).to.eql('EXECUTED'));",
-                  "pm.collectionVariables.set('conversionId', c.conversionId);"
+                  "pm.environment.set('conversionId', c.conversionId);"
                 ]
               }
             }
@@ -647,7 +647,7 @@
                 "exec": [
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
                   "pm.test('same conversionId (no second conversion)', () => {",
-                  "  pm.expect(pm.response.json().conversionId).to.eql(pm.collectionVariables.get('conversionId'));",
+                  "  pm.expect(pm.response.json().conversionId).to.eql(pm.environment.get('conversionId'));",
                   "});"
                 ]
               }
@@ -796,7 +796,7 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "pm.collectionVariables.set('withdrawalKey', pm.variables.replaceIn('{{$guid}}'));"
+                  "pm.environment.set('withdrawalKey', pm.variables.replaceIn('{{$guid}}'));"
                 ]
               }
             },
@@ -808,9 +808,9 @@
                   "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
                   "const w = pm.response.json();",
                   "pm.test('status PENDING and holds funds', () => pm.expect(w.status).to.eql('PENDING'));",
-                  "pm.collectionVariables.set('withdrawalId', w.withdrawalId);",
+                  "pm.environment.set('withdrawalId', w.withdrawalId);",
                   "// The stub rail derives its reference deterministically from the id.",
-                  "pm.collectionVariables.set('payoutReference', 'payout_' + w.withdrawalId);"
+                  "pm.environment.set('payoutReference', 'payout_' + w.withdrawalId);"
                 ]
               }
             }
@@ -860,7 +860,7 @@
                 "exec": [
                   "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
                   "pm.test('same withdrawalId (no second hold)', () => {",
-                  "  pm.expect(pm.response.json().withdrawalId).to.eql(pm.collectionVariables.get('withdrawalId'));",
+                  "  pm.expect(pm.response.json().withdrawalId).to.eql(pm.environment.get('withdrawalId'));",
                   "});"
                 ]
               }
@@ -912,7 +912,7 @@
                   "pm.test('200 OK', () => pm.response.to.have.status(200));",
                   "const w = pm.response.json();",
                   "pm.test('has a status', () => pm.expect(['PENDING','SUBMITTED','COMPLETED','FAILED']).to.include(w.status));",
-                  "if (w.payoutReference) pm.collectionVariables.set('payoutReference', w.payoutReference);",
+                  "if (w.payoutReference) pm.environment.set('payoutReference', w.payoutReference);",
                   "console.log('withdrawal status:', w.status, 'ref:', w.payoutReference);"
                 ]
               }
@@ -1141,19 +1141,19 @@
               "script": {
                 "type": "text/javascript",
                 "exec": [
-                  "// The payout rail submits asynchronously via the transactional outbox.",
-                  "// Wait until the withdrawal reaches SUBMITTED (payoutReference assigned)",
-                  "// before firing the callback, otherwise the rail reference does not yet exist.",
-                  "const base = pm.variables.replaceIn('{{baseUrl}}');",
-                  "const mid = pm.collectionVariables.get('merchantId');",
-                  "const wid = pm.collectionVariables.get('withdrawalId');",
-                  "const deadline = Date.now() + 10000;",
-                  "function poll() {",
-                  "  pm.sendRequest(`${base}/merchants/${mid}/withdrawals/${wid}`, (err, res) => {",
-                  "    const ready = !err && res.code === 200 && res.json().payoutReference;",
-                  "    if (ready) {",
-                  "      pm.collectionVariables.set('payoutReference', res.json().payoutReference);",
-                  "    } else if (Date.now() < deadline) {",
+                  "// The payout rail submits asynchronously via the transactional outbox",
+                  "// (poll interval ~1s). Wait until the withdrawal reaches SUBMITTED and the",
+                  "// rail reference exists before firing the callback, otherwise it 404s.",
+                  "const base = pm.environment.get('baseUrl');",
+                  "const mid = pm.environment.get('merchantId');",
+                  "const wid = pm.environment.get('withdrawalId');",
+                  "let attempts = 16;",
+                  "async function poll() {",
+                  "  pm.sendRequest({ url: base + '/merchants/' + mid + '/withdrawals/' + wid, method: 'GET' }, (err, res) => {",
+                  "    const ref = !err && res.code === 200 ? res.json().payoutReference : null;",
+                  "    if (ref) {",
+                  "      pm.environment.set('payoutReference', ref);",
+                  "    } else if (attempts-- > 0) {",
                   "      setTimeout(poll, 250);",
                   "    }",
                   "  });",
