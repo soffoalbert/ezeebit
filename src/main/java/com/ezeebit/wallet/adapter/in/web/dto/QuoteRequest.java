@@ -1,0 +1,13 @@
+package com.ezeebit.wallet.adapter.in.web.dto;
+
+import com.ezeebit.wallet.domain.model.Currency;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Positive;
+
+import java.math.BigDecimal;
+
+public record QuoteRequest(
+        @NotNull Currency fromCurrency,
+        @NotNull Currency toCurrency,
+        @NotNull @Positive BigDecimal amount) {
+}

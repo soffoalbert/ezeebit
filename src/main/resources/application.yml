@@ -1,0 +1,44 @@
+spring:
+  application:
+    name: ezeebit-wallet
+  datasource:
+    url: jdbc:mysql://localhost:3306/wallet?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC
+    username: wallet
+    password: wallet
+    hikari:
+      maximum-pool-size: 20
+  jpa:
+    hibernate:
+      ddl-auto: none
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+
+server:
+  port: 8080
+
+# Tunable knobs for the stubbed external services so failure handling is demonstrable.
+wallet:
+  conversion:
+    quote-ttl-seconds: 30
+    # Spread taken in the platform's favour on every quote (0.005 = 0.5%).
+    spread: 0.005
+    # Reject a rate that deviates from the last-seen rate by more than this fraction.
+    max-rate-deviation: 0.10
+  exchange-rate:
+    # Artificial latency and failure injection for the stub provider.
+    latency-ms: 0
+    failure-rate: 0.0
+  payout:
+    # Simulated async settlement delay and outcome for the stub payout rail.
+    settlement-delay-ms: 1000
+    failure-rate: 0.0
+
+logging:
+  level:
+    com.ezeebit.wallet: INFO
