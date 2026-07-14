@@ -42,6 +42,13 @@ public abstract class AbstractIntegrationTest {
         // application.yml defaults (no failures) and overridden per-test where needed.
         registry.add("wallet.exchange-rate.latency-ms", () -> "0");
         registry.add("wallet.exchange-rate.failure-rate", () -> "0.0");
+        // Quiet the background pollers: multiple cached Spring contexts share one database,
+        // so an always-on relay in one context would race events belonging to another.
+        // Tests that exercise the async path drive the relay explicitly instead.
+        registry.add("wallet.outbox.poll-interval-ms", () -> "3600000");
+        registry.add("wallet.payout.sweeper-interval-ms", () -> "3600000");
+        registry.add("wallet.conversion.expiry-sweep-ms", () -> "3600000");
+        registry.add("wallet.ledger.invariant-check-ms", () -> "3600000");
     }
 
     @Autowired
@@ -49,12 +56,15 @@ public abstract class AbstractIntegrationTest {
 
     @BeforeEach
     void resetData() {
-        // Start each test from clean balances/ledger while keeping the seeded merchants/accounts.
+        // Start each test from clean balances/ledger while keeping the seeded merchants,
+        // accounts, and withdrawal limits.
+        jdbc.update("DELETE FROM outbox_event");
         jdbc.update("DELETE FROM ledger_entry");
         jdbc.update("DELETE FROM conversion");
         jdbc.update("DELETE FROM conversion_quote");
         jdbc.update("DELETE FROM withdrawal");
         jdbc.update("DELETE FROM idempotency_record");
+        jdbc.update("DELETE FROM rate_observation");
         jdbc.update("UPDATE account SET balance = 0, version = 0");
     }
 

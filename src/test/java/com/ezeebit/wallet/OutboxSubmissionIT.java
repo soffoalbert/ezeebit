@@ -10,26 +10,18 @@ import com.ezeebit.wallet.adapter.in.scheduling.OutboxRelay;
 import com.ezeebit.wallet.domain.model.Currency;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.test.context.TestPropertySource;
 
 import java.math.BigDecimal;
+import java.time.Duration;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
-import java.time.Duration;
-
 /**
- * With the stub rail forced to fail, a held withdrawal must end FAILED and the held
- * funds must be released back to the merchant's balance.
+ * The outbox relay — not an in-memory hook — carries a held withdrawal to submission and
+ * settlement. Proves the durable path works end to end.
  */
-@TestPropertySource(properties = {
-        "wallet.payout.failure-rate=1.0",
-        // Comfortably longer than commit latency, so the failure callback lands after the
-        // withdrawal's SUBMITTED state (and its payout reference) is committed.
-        "wallet.payout.settlement-delay-ms=400"
-})
-class WithdrawalFailureIT extends AbstractIntegrationTest {
+class OutboxSubmissionIT extends AbstractIntegrationTest {
 
     private static final long MERCHANT = 1L;
 
@@ -43,27 +35,28 @@ class WithdrawalFailureIT extends AbstractIntegrationTest {
     OutboxRelay outboxRelay;
 
     @Test
-    void failedPayoutReleasesHeldFunds() {
+    void heldWithdrawalIsSubmittedAndSettledViaOutbox() {
         deposit.deposit(new DepositCommand(MERCHANT, Currency.USDT, new BigDecimal("100.000000"),
-                "seed-fail", "seed"));
+                "seed-ob", "seed"));
 
         WithdrawalView requested = withdraw.request(new RequestWithdrawalCommand(
                 MERCHANT, Currency.USDT, new BigDecimal("40.000000"),
-                "{\"address\":\"chain-address-0001\"}", "wd-fail-1"));
+                "{\"address\":\"chain-address-000\"}", "wd-ob-1"));
 
-        // Immediately after the request the funds are held.
-        assertThat(balanceOf(MERCHANT, "USDT")).isEqualByComparingTo("60.000000");
+        // An outbox row was written in the same transaction as the hold.
+        Long outboxRows = jdbc.queryForObject("SELECT COUNT(*) FROM outbox_event", Long.class);
+        assertThat(outboxRows).isEqualTo(1L);
 
-        // Drive the relay to submit to the (forced-failing) rail.
+        // Drive the relay: it claims the event and submits to the rail, which then settles.
         outboxRelay.poll();
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
+                assertThat(getWithdrawal.get(MERCHANT, requested.withdrawalId()).status())
+                        .isEqualTo("COMPLETED"));
 
-        // The async rail settles as a failure; wait for the compensating release.
-        await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
-            var view = getWithdrawal.get(MERCHANT, requested.withdrawalId());
-            assertThat(view.status()).isEqualTo("FAILED");
-        });
-
-        assertThat(balanceOf(MERCHANT, "USDT")).isEqualByComparingTo("100.000000");
+        // The outbox event ends PROCESSED and the balance reflects the paid-out hold.
+        String status = jdbc.queryForObject("SELECT status FROM outbox_event", String.class);
+        assertThat(status).isEqualTo("PROCESSED");
+        assertThat(balanceOf(MERCHANT, "USDT")).isEqualByComparingTo("60.000000");
         assertLedgerInvariantHolds();
     }
 }

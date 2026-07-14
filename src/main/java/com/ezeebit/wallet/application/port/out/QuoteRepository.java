@@ -2,6 +2,7 @@ package com.ezeebit.wallet.application.port.out;
 
 import com.ezeebit.wallet.domain.model.Quote;
 
+import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -13,4 +14,7 @@ public interface QuoteRepository {
     Optional<Quote> lockForUpdate(UUID id);
 
     Optional<Quote> find(UUID id);
+
+    /** Mark ACTIVE quotes whose expiry has passed as EXPIRED. Returns the number updated. */
+    int expireActiveOlderThan(Instant now);
 }

@@ -5,7 +5,7 @@ import com.ezeebit.wallet.application.port.in.BalanceView;
 import com.ezeebit.wallet.application.port.in.DepositFundsUseCase;
 import com.ezeebit.wallet.application.port.in.GetBalancesUseCase;
 import com.ezeebit.wallet.application.port.in.GetLedgerHistoryUseCase;
-import com.ezeebit.wallet.application.port.in.GetLedgerHistoryUseCase.LedgerEntryView;
+import com.ezeebit.wallet.application.port.in.GetLedgerHistoryUseCase.LedgerPage;
 import com.ezeebit.wallet.domain.model.Currency;
 import jakarta.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -52,10 +52,10 @@ class MerchantAccountController {
     }
 
     @GetMapping("/accounts/{currency}/ledger")
-    List<LedgerEntryView> ledger(@PathVariable long merchantId,
-                                 @PathVariable Currency currency,
-                                 @RequestParam(defaultValue = "50") int limit,
-                                 @RequestParam(defaultValue = "0") int offset) {
-        return getLedger.history(merchantId, currency, limit, offset);
+    LedgerPage ledger(@PathVariable long merchantId,
+                      @PathVariable Currency currency,
+                      @RequestParam(required = false) Long before,
+                      @RequestParam(defaultValue = "50") int limit) {
+        return getLedger.history(merchantId, currency, before, limit);
     }
 }

@@ -75,6 +75,45 @@ Implement the plan end to end (Spring Boot hexagonal app, MySQL, tests, README, 
 - Remaining known limitations captured in [SOLUTION.md](SOLUTION.md) (in-memory rate-deviation
   guard, post-commit submission vs transactional outbox).
 
+## Session 3 — 2026-07-14 — Hardening (outbox, observability, limits)
+
+**What I asked for:**
+Implement everything I'd listed under "What I'd do with more time" and "Known limitations /
+not finished" in SOLUTION.md.
+
+**What the AI produced:**
+- **Transactional outbox** for payout submission (`outbox_event` table, `OutboxRelay` using
+  `FOR UPDATE SKIP LOCKED` + backoff), replacing the post-commit event; recovery sweeper kept as a
+  backstop.
+- **Shared rate-deviation reference** (`rate_observation` table) replacing the in-memory map.
+- **Quote mid-rate persistence** and a **quote-expiry job**.
+- **Observability:** Micrometer metrics, a `wallet.audit` structured log per ledger movement, a
+  scheduled **ledger-invariant monitor**, and actuator/Prometheus endpoints.
+- **Per-(merchant, currency) withdrawal limits** and a **payout destination validator**.
+- **Cursor (keyset) pagination** on the ledger endpoint.
+- **Tests:** `@WebMvcTest` slices, a randomised property-style invariant test, and integration tests
+  for the outbox, rate guard, limits/validation, and pagination. Final: **32 tests green**, plus a
+  live HTTP smoke test of every new behaviour.
+
+**Accepted / changed / rejected (where my judgement corrected the AI):**
+- **Rejected the AI's first callback-retry fix.** To handle a callback arriving before the SUBMITTED
+  state committed, it made the stub rail retry callbacks — which, in the shared test context,
+  flooded the scheduler retrying callbacks for rows deleted between tests and broke a passing test.
+  Replaced it with a simple settlement delay that guarantees ordering.
+- **Diagnosed a cross-context test-isolation bug the AI initially missed:** Spring caches the
+  `@SpringBootTest` context across classes, so a cached context's always-on outbox relay raced
+  another context's events on the shared DB (submitting a "should-fail" withdrawal as success).
+  Fixed by quieting the schedulers under test and driving the relay explicitly where async behaviour
+  is asserted.
+- **Rejected a broken monitoring query** (`HAVING` without `GROUP BY`) in favour of a correlated
+  subquery in `WHERE`.
+- **Accepted** the outbox/observability/limits designs; they slotted onto the existing ports cleanly,
+  confirming the hexagonal boundaries held up under a second, larger change.
+
+**My notes / decisions carried forward:**
+- Remaining future work (exactly-once provider tokens, rolling-window limits, audit sink) is in the
+  updated [SOLUTION.md](SOLUTION.md).
+
 <!-- Template for subsequent sessions:
 
 ## Session N — YYYY-MM-DD — <short title>

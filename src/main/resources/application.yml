@@ -22,6 +22,15 @@ spring:
 server:
   port: 8080
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics, prometheus
+  endpoint:
+    health:
+      show-details: always
+
 # Tunable knobs for the stubbed external services so failure handling is demonstrable.
 wallet:
   conversion:
@@ -38,6 +47,16 @@ wallet:
     # Simulated async settlement delay and outcome for the stub payout rail.
     settlement-delay-ms: 1000
     failure-rate: 0.0
+  withdrawal:
+    # Default per-currency cap on a single withdrawal (a per-merchant DB override wins).
+    max-per-currency:
+      ZAR: 2000000.00
+      NGN: 50000000.00
+      KES: 15000000.00
+      USDT: 100000.000000
+      USDC: 100000.000000
+  outbox:
+    poll-interval-ms: 1000
 
 logging:
   level:

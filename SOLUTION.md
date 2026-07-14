@@ -138,27 +138,53 @@ State machine: `PENDING → SUBMITTED → COMPLETED | FAILED`.
   come from Task 4's confirmation flow.
 - Rounding on conversion is **against the merchant** (received amount rounded down) so rounding never
   favours them; the spread is the platform's margin.
-- The rate-deviation guard's "last rate" is per-instance and in-memory — fine for a single node, and
-  called out below as something to move to a shared store.
+- The spread is the platform's margin; rounding on conversion is against the merchant.
+
+## Hardening implemented
+
+The following were built out beyond the core three tasks (see the commit history / package
+`adapter.out.persistence` and `adapter.in.scheduling`):
+
+- **Transactional outbox for payout submission.** Requesting a withdrawal now writes an
+  `outbox_event` row in the *same transaction* as the hold. An `OutboxRelay` claims due events
+  with `SELECT … FOR UPDATE SKIP LOCKED`, dispatches each to the idempotent `submit` use case,
+  and retries with exponential backoff. This replaces the post-commit event: submission now
+  survives a crash at any point (a claimed-but-unfinished event is reclaimed once its claim goes
+  stale), and is effectively exactly-once. The recovery sweeper remains as a reconciliation backstop.
+- **Shared rate-deviation reference.** The "last accepted rate" moved from an in-memory map to a
+  `rate_observation` table (`RateReferenceStore`), so the bad-rate guard holds across instances.
+- **Quote reconciliation & expiry.** The raw feed mid-rate is persisted alongside the effective
+  rate (`conversion_quote.mid_rate`), and a `QuoteExpiryJob` marks stale `ACTIVE` quotes `EXPIRED`.
+- **Observability.** Micrometer metrics (`wallet.ledger.entries` tagged by type/currency,
+  `wallet.outbox.processed|failed`), a structured `wallet.audit` log line per ledger movement, and a
+  `LedgerInvariantMonitor` that periodically checks `SUM(entries) == balance` and raises an ERROR +
+  a `wallet.ledger.invariant.violations` gauge on drift. Actuator exposes `/actuator/health`,
+  `/metrics`, and `/prometheus`.
+- **Withdrawal limits & destination validation.** A per-(merchant, currency) cap
+  (`withdrawal_limit` table) with a configurable per-currency default, plus a `PayoutDestinationValidator`
+  that requires a blockchain address for stablecoins and bank details for fiat — rejected up front
+  (`WITHDRAWAL_LIMIT_EXCEEDED` / `INVALID_DESTINATION`, 422) before any funds are held.
+- **Cursor (keyset) pagination** on the ledger endpoint (`?before=<id>&limit=`), stable under
+  concurrent appends, returning a `nextCursor`.
+- **Tests:** `@WebMvcTest` slices for the HTTP contract and problem-response shapes, a randomised
+  property-style test that hammers the wallet and asserts the ledger invariant, and integration tests
+  for the outbox path, the DB rate guard, limits/destination validation, and cursor paging.
 
 ## What I'd do with more time
 
-- **Money-only unit tests are thorough, but** I'd add controller (`@WebMvcTest`) tests for the HTTP
-  contract and problem-response shapes, and a property-based test for the ledger invariant.
-- **Outbox for the payout submission** instead of a post-commit event, so submission survives a crash
-  without relying solely on the sweeper, and to make the rail call exactly-once end-to-end.
-- **Move the rate-deviation reference and any cross-instance idempotency assumptions** to a shared
-  store (Redis/DB) so the safety checks hold across multiple nodes.
-- **Quote signing / persistence of the mid-rate** for post-hoc reconciliation, and a background job to
-  expire stale `ACTIVE` quotes.
-- **Observability:** structured audit events, metrics on hold/settle/release counts, and alerts on the
-  ledger invariant drifting.
-- **Per-merchant/currency limits and validation** of destination formats (chain address vs bank).
+- **Exactly-once rail calls with an idempotency token** exchanged with the payout provider, and a
+  dead-letter view for outbox events that reach `FAILED`.
+- **Cross-instance idempotency hardening:** the `idempotency_record` unique constraint already makes
+  duplicate requests safe across nodes; I'd add request-hash coverage of the full payload and a TTL /
+  archival policy for old records.
+- **Daily/rolling limits** (not just per-withdrawal), and richer destination validation per chain/bank
+  scheme.
+- **Delivery of the audit stream** to an append-only sink (e.g. Kafka) and dashboards/alerts on the
+  exported metrics.
 
 ## Known limitations / not finished
 
-- The rate-deviation guard is in-memory (single-node). 
-- Withdrawal submission relies on a post-commit event plus a sweeper rather than a transactional
-  outbox; under a crash at exactly the wrong moment, submission is delayed to the next sweep (funds
-  remain safely held, never lost).
-- No pagination cursor on the ledger endpoint beyond `limit`/`offset`.
+- The stubbed payout rail retries are not modelled end-to-end; a genuinely lost provider callback is
+  reconciled only by the recovery sweeper (funds remain safely held meanwhile, never lost).
+- Limits are per-withdrawal, not rolling-window; destination validation is structural, not scheme-aware.
+- The rate-deviation reference keeps only the last value per pair, not a time-weighted band.

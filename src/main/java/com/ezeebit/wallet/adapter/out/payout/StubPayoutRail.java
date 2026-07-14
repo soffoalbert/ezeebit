@@ -62,9 +62,10 @@ class StubPayoutRail implements PayoutRail {
                     : new PayoutResult(reference, PayoutResult.Outcome.SUCCEEDED, null);
             payoutResultHandler.handle(result);
         } catch (RuntimeException e) {
-            // A real rail retries until acknowledged; log and let it be retried.
-            log.warn("payout callback for {} failed, will be retried by the rail: {}",
-                    reference, e.getMessage());
+            // A real rail retries until acknowledged; here we log and let the recovery
+            // sweeper reconcile. (The callback only arrives after the settlement delay, by
+            // which point the SUBMITTED state and its reference are committed.)
+            log.warn("payout callback for {} could not be applied: {}", reference, e.getMessage());
         }
     }
 }

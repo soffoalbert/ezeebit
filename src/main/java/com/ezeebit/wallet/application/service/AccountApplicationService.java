@@ -69,12 +69,19 @@ public class AccountApplicationService
 
     @Override
     @Transactional(readOnly = true)
-    public List<GetLedgerHistoryUseCase.LedgerEntryView> history(long merchantId, Currency currency,
-                                                                 int limit, int offset) {
+    public GetLedgerHistoryUseCase.LedgerPage history(long merchantId, Currency currency,
+                                                      Long before, int limit) {
         Account account = accounts.find(merchantId, currency)
                 .orElseThrow(() -> new AccountNotFoundException(merchantId, currency));
-        return ledger.findByAccount(account.id(), limit, offset).stream()
-                .map(GetLedgerHistoryUseCase.LedgerEntryView::of)
-                .toList();
+        int size = limit <= 0 ? 50 : Math.min(limit, 200);
+        List<GetLedgerHistoryUseCase.LedgerEntryView> entries =
+                ledger.findByAccount(account.id(), before, size).stream()
+                        .map(GetLedgerHistoryUseCase.LedgerEntryView::of)
+                        .toList();
+        // A full page implies there may be more; the cursor is the oldest id returned.
+        Long nextCursor = entries.size() == size
+                ? entries.get(entries.size() - 1).id()
+                : null;
+        return new GetLedgerHistoryUseCase.LedgerPage(entries, nextCursor);
     }
 }

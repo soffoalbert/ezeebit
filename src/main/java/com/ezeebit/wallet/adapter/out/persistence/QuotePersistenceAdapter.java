@@ -4,6 +4,7 @@ import com.ezeebit.wallet.application.port.out.QuoteRepository;
 import com.ezeebit.wallet.domain.model.Quote;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -29,5 +30,10 @@ class QuotePersistenceAdapter implements QuoteRepository {
     @Override
     public Optional<Quote> find(UUID id) {
         return jpa.findById(id.toString()).map(ConversionQuoteEntity::toDomain);
+    }
+
+    @Override
+    public int expireActiveOlderThan(Instant now) {
+        return jpa.expireActiveOlderThan(now, Quote.Status.ACTIVE, Quote.Status.EXPIRED);
     }
 }

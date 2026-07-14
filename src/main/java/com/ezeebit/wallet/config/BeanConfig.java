@@ -22,7 +22,7 @@ class BeanConfig {
     @Bean
     TaskScheduler taskScheduler() {
         ThreadPoolTaskScheduler scheduler = new ThreadPoolTaskScheduler();
-        scheduler.setPoolSize(4);
+        scheduler.setPoolSize(8);
         scheduler.setThreadNamePrefix("payout-rail-");
         scheduler.initialize();
         return scheduler;

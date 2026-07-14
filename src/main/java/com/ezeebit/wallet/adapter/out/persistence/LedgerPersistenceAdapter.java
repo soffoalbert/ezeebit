@@ -23,10 +23,9 @@ class LedgerPersistenceAdapter implements LedgerRepository {
     }
 
     @Override
-    public List<LedgerEntry> findByAccount(long accountId, int limit, int offset) {
-        int page = limit <= 0 ? 0 : offset / limit;
+    public List<LedgerEntry> findByAccount(long accountId, Long beforeId, int limit) {
         int size = limit <= 0 ? 50 : limit;
-        return jpa.findByAccount(accountId, PageRequest.of(page, size)).stream()
+        return jpa.findByAccount(accountId, beforeId, PageRequest.of(0, size)).stream()
                 .map(LedgerEntryEntity::toDomain)
                 .toList();
     }

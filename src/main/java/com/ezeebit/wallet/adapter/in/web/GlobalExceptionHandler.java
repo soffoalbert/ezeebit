@@ -57,7 +57,8 @@ class GlobalExceptionHandler {
 
     private HttpStatus statusFor(String code) {
         return switch (code) {
-            case "INSUFFICIENT_FUNDS", "CURRENCY_MISMATCH", "IDEMPOTENCY_CONFLICT" ->
+            case "INSUFFICIENT_FUNDS", "CURRENCY_MISMATCH", "IDEMPOTENCY_CONFLICT",
+                 "WITHDRAWAL_LIMIT_EXCEEDED", "INVALID_DESTINATION" ->
                     HttpStatus.UNPROCESSABLE_ENTITY;
             case "ACCOUNT_NOT_FOUND", "QUOTE_NOT_FOUND", "WITHDRAWAL_NOT_FOUND" ->
                     HttpStatus.NOT_FOUND;

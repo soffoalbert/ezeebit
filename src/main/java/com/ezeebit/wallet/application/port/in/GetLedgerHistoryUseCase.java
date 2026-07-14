@@ -10,7 +10,14 @@ import java.util.List;
 
 public interface GetLedgerHistoryUseCase {
 
-    List<LedgerEntryView> history(long merchantId, Currency currency, int limit, int offset);
+    /**
+     * A page of ledger entries newest-first. {@code before} is a cursor: pass {@code null}
+     * for the first page, then the returned {@code nextCursor} to fetch older entries.
+     * This is stable under concurrent appends, unlike offset paging.
+     */
+    LedgerPage history(long merchantId, Currency currency, Long before, int limit);
+
+    record LedgerPage(List<LedgerEntryView> entries, Long nextCursor) {}
 
     record LedgerEntryView(long id, LedgerEntryType type, BigDecimal amount,
                            BigDecimal balanceAfter, String operationId, String reference,

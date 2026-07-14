@@ -42,6 +42,9 @@ class ConversionQuoteEntity {
     @Column(nullable = false, precision = 38, scale = 18)
     private BigDecimal rate;
 
+    @Column(name = "mid_rate", precision = 38, scale = 18)
+    private BigDecimal midRate;
+
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 16)
     private Quote.Status status;
@@ -63,6 +66,7 @@ class ConversionQuoteEntity {
         e.fromAmount = q.fromAmount().amount();
         e.toAmount = q.toAmount().amount();
         e.rate = q.rate();
+        e.midRate = q.midRate();
         e.status = q.status();
         e.createdAt = q.createdAt();
         e.expiresAt = q.expiresAt();
@@ -72,6 +76,6 @@ class ConversionQuoteEntity {
     Quote toDomain() {
         return new Quote(UUID.fromString(id), merchantId,
                 Money.of(fromAmount, fromCurrency), Money.of(toAmount, toCurrency),
-                rate, status, createdAt, expiresAt);
+                rate, midRate, status, createdAt, expiresAt);
     }
 }

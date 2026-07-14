@@ -4,21 +4,28 @@ import com.ezeebit.wallet.application.port.in.GetWithdrawalUseCase;
 import com.ezeebit.wallet.application.port.in.HandlePayoutResultUseCase;
 import com.ezeebit.wallet.application.port.in.RequestWithdrawalUseCase;
 import com.ezeebit.wallet.application.port.in.SubmitWithdrawalUseCase;
+import com.ezeebit.wallet.application.port.out.OutboxRepository;
 import com.ezeebit.wallet.application.port.out.PayoutRail;
-import com.ezeebit.wallet.application.port.out.PayoutSubmissionScheduler;
+import com.ezeebit.wallet.application.port.out.WithdrawalLimitRepository;
 import com.ezeebit.wallet.application.port.out.WithdrawalRepository;
+import com.ezeebit.wallet.application.service.support.PayoutDestinationValidator;
 import com.ezeebit.wallet.application.service.support.RequestHash;
+import com.ezeebit.wallet.config.WalletProperties;
+import com.ezeebit.wallet.domain.exception.WithdrawalLimitExceededException;
 import com.ezeebit.wallet.domain.exception.WithdrawalNotFoundException;
 import com.ezeebit.wallet.domain.model.LedgerEntryType;
 import com.ezeebit.wallet.domain.model.Money;
+import com.ezeebit.wallet.domain.model.OutboxEvent;
 import com.ezeebit.wallet.domain.model.Withdrawal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -45,18 +52,27 @@ public class WithdrawalApplicationService
     private final WithdrawalRepository withdrawals;
     private final LedgerPostingService posting;
     private final PayoutRail rail;
-    private final PayoutSubmissionScheduler submissionScheduler;
+    private final OutboxRepository outbox;
+    private final WithdrawalLimitRepository limits;
+    private final PayoutDestinationValidator destinationValidator;
     private final IdempotencyGuard idempotency;
+    private final WalletProperties properties;
     private final Clock clock;
 
     public WithdrawalApplicationService(WithdrawalRepository withdrawals, LedgerPostingService posting,
-                                        PayoutRail rail, PayoutSubmissionScheduler submissionScheduler,
-                                        IdempotencyGuard idempotency, Clock clock) {
+                                        PayoutRail rail, OutboxRepository outbox,
+                                        WithdrawalLimitRepository limits,
+                                        PayoutDestinationValidator destinationValidator,
+                                        IdempotencyGuard idempotency, WalletProperties properties,
+                                        Clock clock) {
         this.withdrawals = withdrawals;
         this.posting = posting;
         this.rail = rail;
-        this.submissionScheduler = submissionScheduler;
+        this.outbox = outbox;
+        this.limits = limits;
+        this.destinationValidator = destinationValidator;
         this.idempotency = idempotency;
+        this.properties = properties;
         this.clock = clock;
     }
 
@@ -70,6 +86,9 @@ public class WithdrawalApplicationService
         if (command.destination() == null || command.destination().isBlank()) {
             throw new IllegalArgumentException("withdrawal destination is required");
         }
+        destinationValidator.validate(command.currency(), command.destination());
+        enforceLimit(command.merchantId(), amount);
+
         String hash = RequestHash.of(command.merchantId(), command.currency(),
                 amount.amount(), command.destination());
 
@@ -84,10 +103,23 @@ public class WithdrawalApplicationService
                             withdrawal.operationId(), "withdrawal " + withdrawal.id());
                     withdrawals.save(withdrawal);
 
-                    // Submit to the rail only after this transaction commits.
-                    submissionScheduler.schedule(withdrawal.id());
+                    // Durably record the intent to submit, in the same transaction as the hold.
+                    // The outbox relay dispatches it after commit; a crash cannot lose it.
+                    outbox.append(OutboxEvent.create(
+                            OutboxEventTypes.AGG_WITHDRAWAL, withdrawal.id().toString(),
+                            OutboxEventTypes.WITHDRAWAL_SUBMISSION_REQUESTED,
+                            "{\"withdrawalId\":\"" + withdrawal.id() + "\"}", now));
                     return toView(withdrawal);
                 });
+    }
+
+    private void enforceLimit(long merchantId, Money amount) {
+        Optional<BigDecimal> max = limits.maxPerWithdrawal(merchantId, amount.currency())
+                .or(() -> Optional.ofNullable(
+                        properties.withdrawal().maxPerCurrency().get(amount.currency().name())));
+        if (max.isPresent() && amount.amount().compareTo(max.get()) > 0) {
+            throw new WithdrawalLimitExceededException(amount, max.get());
+        }
     }
 
     @Override

@@ -20,18 +20,21 @@ public final class Quote {
     private final long merchantId;
     private final Money fromAmount;
     private final Money toAmount;
-    private final java.math.BigDecimal rate;   // effective, incl. spread: toAmount = fromAmount * rate
+    private final java.math.BigDecimal rate;      // effective, incl. spread: toAmount = fromAmount * rate
+    private final java.math.BigDecimal midRate;   // raw feed mid-rate, kept for reconciliation
     private Status status;
     private final Instant createdAt;
     private final Instant expiresAt;
 
     public Quote(UUID id, long merchantId, Money fromAmount, Money toAmount,
-                 java.math.BigDecimal rate, Status status, Instant createdAt, Instant expiresAt) {
+                 java.math.BigDecimal rate, java.math.BigDecimal midRate, Status status,
+                 Instant createdAt, Instant expiresAt) {
         this.id = Objects.requireNonNull(id);
         this.merchantId = merchantId;
         this.fromAmount = Objects.requireNonNull(fromAmount);
         this.toAmount = Objects.requireNonNull(toAmount);
         this.rate = Objects.requireNonNull(rate);
+        this.midRate = midRate;
         this.status = Objects.requireNonNull(status);
         this.createdAt = createdAt;
         this.expiresAt = Objects.requireNonNull(expiresAt);
@@ -58,6 +61,7 @@ public final class Quote {
     public Money fromAmount() { return fromAmount; }
     public Money toAmount() { return toAmount; }
     public java.math.BigDecimal rate() { return rate; }
+    public java.math.BigDecimal midRate() { return midRate; }
     public Status status() { return status; }
     public Instant createdAt() { return createdAt; }
     public Instant expiresAt() { return expiresAt; }

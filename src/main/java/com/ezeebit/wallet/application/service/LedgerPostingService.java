@@ -6,6 +6,9 @@ import com.ezeebit.wallet.domain.model.Account;
 import com.ezeebit.wallet.domain.model.LedgerEntry;
 import com.ezeebit.wallet.domain.model.LedgerEntryType;
 import com.ezeebit.wallet.domain.model.Money;
+import io.micrometer.core.instrument.MeterRegistry;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.UUID;
@@ -22,12 +25,16 @@ import java.util.UUID;
 @Service
 public class LedgerPostingService {
 
+    private static final Logger audit = LoggerFactory.getLogger("wallet.audit");
+
     private final AccountRepository accounts;
     private final LedgerRepository ledger;
+    private final MeterRegistry meters;
 
-    public LedgerPostingService(AccountRepository accounts, LedgerRepository ledger) {
+    public LedgerPostingService(AccountRepository accounts, LedgerRepository ledger, MeterRegistry meters) {
         this.accounts = accounts;
         this.ledger = ledger;
+        this.meters = meters;
     }
 
     /**
@@ -56,6 +63,13 @@ public class LedgerPostingService {
         Account saved = accounts.save(account);
         ledger.append(new LedgerEntry(null, saved.id(), merchantId, type, signedAmount,
                 operationId, saved.balance(), reference, null));
+
+        // Observability: a metric per entry type and a structured audit line for every movement.
+        meters.counter("wallet.ledger.entries", "type", type.name(),
+                "currency", magnitude.currency().name()).increment();
+        audit.info("ledger_post merchant={} type={} amount={} balance_after={} operation={} ref={}",
+                merchantId, type, signedAmount.amount().toPlainString(),
+                saved.balance().amount().toPlainString(), operationId, reference);
         return saved;
     }
 }

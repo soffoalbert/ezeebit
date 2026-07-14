@@ -5,6 +5,7 @@ import com.ezeebit.wallet.application.port.in.QuoteConversionUseCase;
 import com.ezeebit.wallet.application.port.out.ConversionRepository;
 import com.ezeebit.wallet.application.port.out.ExchangeRateProvider;
 import com.ezeebit.wallet.application.port.out.QuoteRepository;
+import com.ezeebit.wallet.application.port.out.RateReferenceStore;
 import com.ezeebit.wallet.application.service.support.RequestHash;
 import com.ezeebit.wallet.config.WalletProperties;
 import com.ezeebit.wallet.domain.exception.InvalidRateException;
@@ -21,8 +22,8 @@ import java.math.BigDecimal;
 import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Task 2 — convert one currency into another via a quote → execute flow.
@@ -42,22 +43,20 @@ public class ConversionApplicationService implements QuoteConversionUseCase, Exe
     private final ConversionRepository conversions;
     private final LedgerPostingService posting;
     private final IdempotencyGuard idempotency;
+    private final RateReferenceStore rateReference;
     private final WalletProperties properties;
     private final Clock clock;
 
-    // Last rate we accepted per pair, used only to reject wildly-off feed values.
-    // In-memory and best-effort; a shared cache would be needed across instances.
-    private final ConcurrentHashMap<String, BigDecimal> lastAcceptedRate = new ConcurrentHashMap<>();
-
     public ConversionApplicationService(ExchangeRateProvider rateProvider, QuoteRepository quotes,
                                         ConversionRepository conversions, LedgerPostingService posting,
-                                        IdempotencyGuard idempotency, WalletProperties properties,
-                                        Clock clock) {
+                                        IdempotencyGuard idempotency, RateReferenceStore rateReference,
+                                        WalletProperties properties, Clock clock) {
         this.rateProvider = rateProvider;
         this.quotes = quotes;
         this.conversions = conversions;
         this.posting = posting;
         this.idempotency = idempotency;
+        this.rateReference = rateReference;
         this.properties = properties;
         this.clock = clock;
     }
@@ -86,7 +85,7 @@ public class ConversionApplicationService implements QuoteConversionUseCase, Exe
 
         Instant now = clock.instant();
         Quote quote = new Quote(UUID.randomUUID(), command.merchantId(), fromAmount, toAmount,
-                effectiveRate, Quote.Status.ACTIVE, now,
+                effectiveRate, midRate, Quote.Status.ACTIVE, now,
                 now.plusSeconds(properties.conversion().quoteTtlSeconds()));
         quotes.save(quote);
 
@@ -138,17 +137,16 @@ public class ConversionApplicationService implements QuoteConversionUseCase, Exe
             throw new InvalidRateException("exchange rate for " + from + "->" + to + " was non-positive");
         }
 
-        String pair = from + ":" + to;
-        BigDecimal previous = lastAcceptedRate.get(pair);
-        if (previous != null) {
-            BigDecimal deviation = value.subtract(previous).abs()
-                    .divide(previous, 8, RoundingMode.HALF_UP);
+        Optional<BigDecimal> previous = rateReference.lastRate(from, to);
+        if (previous.isPresent()) {
+            BigDecimal deviation = value.subtract(previous.get()).abs()
+                    .divide(previous.get(), 8, RoundingMode.HALF_UP);
             if (deviation.compareTo(properties.conversion().maxRateDeviation()) > 0) {
-                throw new InvalidRateException("exchange rate for " + pair + " moved " + deviation
-                        + ", exceeding the safety threshold; refusing to quote");
+                throw new InvalidRateException("exchange rate for " + from + ":" + to + " moved "
+                        + deviation + ", exceeding the safety threshold; refusing to quote");
             }
         }
-        lastAcceptedRate.put(pair, value);
+        rateReference.record(from, to, value, clock.instant());
         return value;
     }
 

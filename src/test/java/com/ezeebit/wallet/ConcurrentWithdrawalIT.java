@@ -47,7 +47,8 @@ class ConcurrentWithdrawalIT extends AbstractIntegrationTest {
             tasks.add(() -> {
                 try {
                     withdraw.request(new RequestWithdrawalCommand(MERCHANT, Currency.USDT,
-                            new BigDecimal("10.000000"), "{\"addr\":\"chain-" + n + "\"}",
+                            new BigDecimal("10.000000"),
+                            "{\"address\":\"chain-addr-" + String.format("%06d", n) + "\"}",
                             "wd-" + n));
                     accepted.incrementAndGet();
                 } catch (InsufficientFundsException e) {
@@ -75,7 +76,7 @@ class ConcurrentWithdrawalIT extends AbstractIntegrationTest {
                 "seed-2", "seed"));
 
         RequestWithdrawalCommand cmd = new RequestWithdrawalCommand(MERCHANT, Currency.USDT,
-                new BigDecimal("40.000000"), "{\"addr\":\"chain-x\"}", "wd-dup");
+                new BigDecimal("40.000000"), "{\"address\":\"chain-address-0001\"}", "wd-dup");
 
         var first = withdraw.request(cmd);
         var second = withdraw.request(cmd);   // duplicate submit (same key + body)
