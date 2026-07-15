@@ -176,9 +176,17 @@ driven from config (`src/main/resources/application.yml`, prefix `wallet.*`):
 
 ## Tests
 
+Unit tests
+```bash
+mvn test
+
+```
+Integration Tests
 ```bash
 mvn verify
 ```
+
+
 
 - **Unit tests** (`*Test`): domain rules — `Money` arithmetic and currency-mixing rejection,
   no-overdraft, and the withdrawal state machine — plus `@WebMvcTest` slices for the HTTP contract
