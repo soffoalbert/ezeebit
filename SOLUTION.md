@@ -1,18 +1,23 @@
 # SOLUTION
 
-## Tasks chosen
+## Tasks built
 
-I implemented **Task 1 (hold balances)**, **Task 2 (convert)**, and **Task 3 (withdraw)**.
-They form one coherent story — the core wallet that holds, converts, and moves a merchant's
-money — and each one exercises a different correctness concern the brief cares about:
+I implemented **all six tasks**. I started with **Task 1 (hold balances)**, **Task 2 (convert)**,
+and **Task 3 (withdraw)** — the coherent wallet core that holds, converts, and moves a merchant's
+money — then built **Task 4 (accept an incoming crypto payment)**, **Task 5 (auto-settle)**, and
+**Task 6 (payout routing)** on the same ports and the same ledger. Each task exercises a distinct
+correctness concern the brief cares about:
 
 | Task | Correctness concern it demonstrates |
 |------|--------------------------------------|
 | 1 — Hold balances | An auditable double-entry ledger; no silently-mixed currencies |
 | 2 — Convert | Handling a slow, moving external price; quote/execute separation |
 | 3 — Withdraw | Idempotency under duplicate requests; async settlement; holds & compensation |
+| 4 — Incoming crypto | Dedupe + out-of-order confirmations; pending vs available; credit exactly once |
+| 5 — Auto-settle | Outbox-driven market-rate conversion; idempotent, crash-safe when the feed is down |
+| 6 — Payout routing | Route by country/currency/limit/health with failover; funds never stuck |
 
-Tasks 4–6 are implemented on the same ports and the same ledger; each has its own section below.
+Tasks 1–3 are described next; Tasks 4, 5 and 6 each have their own section further below.
 
 ## Architecture — hexagonal (ports & adapters)
 
@@ -199,7 +204,7 @@ transport and now takes the chosen partner.
 
 ## Hardening implemented
 
-The following were built out beyond the core three tasks (see the commit history / package
+The following cross-cutting hardening underpins all six tasks (see the commit history / package
 `adapter.out.persistence` and `adapter.in.scheduling`):
 
 - **Transactional outbox for payout submission.** Requesting a withdrawal now writes an

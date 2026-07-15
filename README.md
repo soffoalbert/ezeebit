@@ -1,9 +1,11 @@
 # Ezeebit Wallet Service
 
 A merchant multi-currency wallet that **holds**, **converts**, and **moves** money, built
-for the Ezeebit backend take-home. It implements Tasks **1 (hold balances)**, **2 (convert)**,
-and **3 (withdraw)** from the brief. See [SOLUTION.md](SOLUTION.md) for the design and
-trade-offs, and [SESSIONS.md](SESSIONS.md) for AI-usage notes.
+for the Ezeebit backend take-home. It implements **all six tasks**: **1 (hold balances)**,
+**2 (convert)**, **3 (withdraw)**, **4 (accept an incoming crypto payment)**,
+**5 (auto-settle)**, and **6 (payout routing)**. I built Tasks 1–3 first as the coherent wallet
+core, then added Tasks 4–6 on the same ports and ledger. See [SOLUTION.md](SOLUTION.md) for the
+design and trade-offs, and [SESSIONS.md](SESSIONS.md) for AI-usage notes.
 
 - **Stack:** Java 21, Spring Boot 3.3, MySQL 8, Flyway, JPA/Hibernate
 - **Architecture:** Hexagonal (ports & adapters) — a framework-free domain, use-case ports
