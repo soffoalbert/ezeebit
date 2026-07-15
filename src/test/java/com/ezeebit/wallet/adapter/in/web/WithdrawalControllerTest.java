@@ -37,7 +37,7 @@ class WithdrawalControllerTest {
     void withdrawalIsAcceptedAsPending() throws Exception {
         when(requestWithdrawal.request(any())).thenReturn(new WithdrawalView(
                 "w-1", 1L, Currency.USDT, new BigDecimal("200.000000"), "PENDING",
-                null, null, Instant.now(), Instant.now()));
+                null, null, null, Instant.now(), Instant.now()));
 
         mvc.perform(post("/merchants/1/withdrawals")
                         .header("Idempotency-Key", "wd-1")

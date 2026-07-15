@@ -114,6 +114,43 @@ not finished" in SOLUTION.md.
 - Remaining future work (exactly-once provider tokens, rolling-window limits, audit sink) is in the
   updated [SOLUTION.md](SOLUTION.md).
 
+## Session 3 — 2026-07-15 — Tasks 4, 5 & 6 at full parity
+
+**What I asked for:**
+Implement Tasks 4 (accept an incoming crypto payment), 5 (auto-settle), and 6 (payout routing)
+to the same standard as Tasks 1–3: domain + ports + services + adapters, Flyway migrations,
+unit + integration tests, collection requests, and README/SOLUTION updates.
+
+**What the AI produced:**
+- **Task 4:** `IncomingPayment` aggregate (monotonic-max confirmations, single-shot confirm,
+  conflict guard) + `incoming_payment` table with `(tx_hash, output_index)` dedupe; pending funds
+  kept entirely off the ledger, surfaced as `pendingIncoming` on balances; a single
+  `INCOMING_CREDIT` posted at the confirmation threshold, appending an outbox event in the same
+  transaction. Webhook + list endpoints.
+- **Task 5:** extracted `ConversionPricer` (shared by quotes and auto-settle so the spread,
+  deviation guard, and round-DOWN are identical); `AutoSettleApplicationService` driven by the
+  outbox with a `settle_status` state machine for idempotency and rate-feed-outage retry; quote-less
+  `conversion` rows (nullable `quote_id`, `trigger_type`, `incoming_payment_id`); rule upsert/list API.
+- **Task 6:** DB-backed `payout_partner` registry + `PayoutRoutingService` (structural pre-check
+  before holding funds, priority failover, transient-vs-terminal classification), `PayoutRail` now
+  takes the chosen partner, per-partner stub knobs, a deadline sweeper that releases stuck payouts,
+  and a partner-health admin API.
+- Full test parity: `IncomingPaymentIT`, `AutoSettleIT`, `AutoSettleRetryIT`, `PayoutRoutingIT`,
+  `PayoutFailoverIT`, domain/slice unit tests; `mvn verify` green across all Tasks 1–6.
+
+**Accepted / changed / rejected:**
+- **Accepted** the pending-never-on-the-ledger split and the outbox-only decoupling (no Spring domain
+  events), keeping the `SUM(entries) == balance` invariant untouched.
+- **Changed** the plan's routing-as-composite-adapter idea to a routing *application service*, so the
+  business policy is visible, attributed, and unit-tested while `PayoutRail` stays pure transport.
+- **Fixed a latent bug found via a flaky cross-test failure:** `@Scheduled(fixedDelay…)` fires once at
+  context startup regardless of the interval, so each test context's background relay raced `resetData`.
+  Added `initialDelayString` (tied to the same interval property) to all four schedulers.
+
+**My notes / decisions carried forward:**
+- Documented reorg handling (`ORPHANED` extension point), the spend-before-settle edge, and the
+  cross-partner double-submit residual risk in [SOLUTION.md](SOLUTION.md).
+
 <!-- Template for subsequent sessions:
 
 ## Session N — YYYY-MM-DD — <short title>

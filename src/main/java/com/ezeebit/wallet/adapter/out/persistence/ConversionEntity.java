@@ -25,8 +25,15 @@ class ConversionEntity {
     @Column(name = "merchant_id", nullable = false)
     private Long merchantId;
 
-    @Column(name = "quote_id", nullable = false, length = 36)
+    @Column(name = "quote_id", length = 36)
     private String quoteId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "trigger_type", nullable = false, length = 16)
+    private Conversion.TriggerType triggerType;
+
+    @Column(name = "incoming_payment_id", length = 36)
+    private String incomingPaymentId;
 
     @Enumerated(EnumType.STRING)
     @Column(name = "from_currency", nullable = false, length = 10)
@@ -64,7 +71,9 @@ class ConversionEntity {
         ConversionEntity e = new ConversionEntity();
         e.id = c.id().toString();
         e.merchantId = c.merchantId();
-        e.quoteId = c.quoteId().toString();
+        e.quoteId = c.quoteId() == null ? null : c.quoteId().toString();
+        e.triggerType = c.triggerType();
+        e.incomingPaymentId = c.incomingPaymentId() == null ? null : c.incomingPaymentId().toString();
         e.fromCurrency = c.fromAmount().currency();
         e.toCurrency = c.toAmount().currency();
         e.fromAmount = c.fromAmount().amount();
@@ -78,7 +87,10 @@ class ConversionEntity {
     }
 
     Conversion toDomain() {
-        return new Conversion(UUID.fromString(id), merchantId, UUID.fromString(quoteId),
+        return new Conversion(UUID.fromString(id), merchantId,
+                quoteId == null ? null : UUID.fromString(quoteId),
+                triggerType,
+                incomingPaymentId == null ? null : UUID.fromString(incomingPaymentId),
                 Money.of(fromAmount, fromCurrency), Money.of(toAmount, toCurrency),
                 rate, status, UUID.fromString(operationId), createdAt, executedAt);
     }

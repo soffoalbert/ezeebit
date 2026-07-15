@@ -27,7 +27,8 @@ class QuoteExpiryJob {
         this.clock = clock;
     }
 
-    @Scheduled(fixedDelayString = "${wallet.conversion.expiry-sweep-ms:60000}")
+    @Scheduled(fixedDelayString = "${wallet.conversion.expiry-sweep-ms:60000}",
+               initialDelayString = "${wallet.conversion.expiry-sweep-ms:60000}")
     @Transactional
     public void expireStaleQuotes() {
         int expired = quotes.expireActiveOlderThan(clock.instant());

@@ -7,6 +7,7 @@ package com.ezeebit.wallet.domain.model;
  */
 public enum LedgerEntryType {
     DEPOSIT(+1),
+    INCOMING_CREDIT(+1),      // confirmed on-chain funds become spendable (Task 4)
     CONVERSION_IN(+1),
     CONVERSION_OUT(-1),
     WITHDRAWAL_HOLD(-1),      // funds leave the spendable balance when a payout is requested

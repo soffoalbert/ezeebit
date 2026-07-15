@@ -47,6 +47,11 @@ wallet:
     # Simulated async settlement delay and outcome for the stub payout rail.
     settlement-delay-ms: 1000
     failure-rate: 0.0
+    # A held payout still PENDING beyond this is failed + released by the sweeper (money never stuck).
+    pending-deadline-ms: 900000
+    # Per-partner stub overrides (failure-rate, unavailable, settlement-delay-ms); unset fields
+    # fall back to the globals above. Left empty by default; set in demos/tests to force failover.
+    partners: {}
   withdrawal:
     # Default per-currency cap on a single withdrawal (a per-merchant DB override wins).
     max-per-currency:
@@ -55,6 +60,9 @@ wallet:
       KES: 15000000.00
       USDT: 100000.000000
       USDC: 100000.000000
+  incoming:
+    # On-chain confirmations required before a pending payment becomes spendable (Task 4).
+    confirmation-threshold: 3
   outbox:
     poll-interval-ms: 1000
 

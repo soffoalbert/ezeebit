@@ -3,26 +3,20 @@ package com.ezeebit.wallet.application.service;
 import com.ezeebit.wallet.application.port.in.ExecuteConversionUseCase;
 import com.ezeebit.wallet.application.port.in.QuoteConversionUseCase;
 import com.ezeebit.wallet.application.port.out.ConversionRepository;
-import com.ezeebit.wallet.application.port.out.ExchangeRateProvider;
 import com.ezeebit.wallet.application.port.out.QuoteRepository;
-import com.ezeebit.wallet.application.port.out.RateReferenceStore;
+import com.ezeebit.wallet.application.service.support.ConversionPricer;
 import com.ezeebit.wallet.application.service.support.RequestHash;
 import com.ezeebit.wallet.config.WalletProperties;
-import com.ezeebit.wallet.domain.exception.InvalidRateException;
 import com.ezeebit.wallet.domain.exception.QuoteNotFoundException;
 import com.ezeebit.wallet.domain.model.Conversion;
-import com.ezeebit.wallet.domain.model.Currency;
 import com.ezeebit.wallet.domain.model.LedgerEntryType;
 import com.ezeebit.wallet.domain.model.Money;
 import com.ezeebit.wallet.domain.model.Quote;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.time.Clock;
 import java.time.Instant;
-import java.util.Optional;
 import java.util.UUID;
 
 /**
@@ -38,25 +32,23 @@ public class ConversionApplicationService implements QuoteConversionUseCase, Exe
 
     private static final String ENDPOINT = "conversion";
 
-    private final ExchangeRateProvider rateProvider;
+    private final ConversionPricer pricer;
     private final QuoteRepository quotes;
     private final ConversionRepository conversions;
     private final LedgerPostingService posting;
     private final IdempotencyGuard idempotency;
-    private final RateReferenceStore rateReference;
     private final WalletProperties properties;
     private final Clock clock;
 
-    public ConversionApplicationService(ExchangeRateProvider rateProvider, QuoteRepository quotes,
+    public ConversionApplicationService(ConversionPricer pricer, QuoteRepository quotes,
                                         ConversionRepository conversions, LedgerPostingService posting,
-                                        IdempotencyGuard idempotency, RateReferenceStore rateReference,
+                                        IdempotencyGuard idempotency,
                                         WalletProperties properties, Clock clock) {
-        this.rateProvider = rateProvider;
+        this.pricer = pricer;
         this.quotes = quotes;
         this.conversions = conversions;
         this.posting = posting;
         this.idempotency = idempotency;
-        this.rateReference = rateReference;
         this.properties = properties;
         this.clock = clock;
     }
@@ -72,25 +64,18 @@ public class ConversionApplicationService implements QuoteConversionUseCase, Exe
             throw new IllegalArgumentException("conversion amount must be positive");
         }
 
-        BigDecimal midRate = fetchAndValidateRate(command.fromCurrency(), command.toCurrency());
-
-        // Spread taken in the platform's favour: the merchant receives slightly less.
-        BigDecimal spread = properties.conversion().spread();
-        BigDecimal effectiveRate = midRate.multiply(BigDecimal.ONE.subtract(spread));
-
-        // Round the amount the merchant receives DOWN, so rounding never favours them.
-        BigDecimal toRaw = fromAmount.amount().multiply(effectiveRate)
-                .setScale(command.toCurrency().scale(), RoundingMode.DOWN);
-        Money toAmount = Money.of(toRaw, command.toCurrency());
+        ConversionPricer.PricedConversion priced =
+                pricer.price(command.fromCurrency(), command.toCurrency(), fromAmount);
+        Money toAmount = priced.toAmount();
 
         Instant now = clock.instant();
         Quote quote = new Quote(UUID.randomUUID(), command.merchantId(), fromAmount, toAmount,
-                effectiveRate, midRate, Quote.Status.ACTIVE, now,
+                priced.effectiveRate(), priced.midRate(), Quote.Status.ACTIVE, now,
                 now.plusSeconds(properties.conversion().quoteTtlSeconds()));
         quotes.save(quote);
 
         return new QuoteView(quote.id().toString(), command.fromCurrency(), command.toCurrency(),
-                fromAmount.amount(), toAmount.amount(), effectiveRate, quote.expiresAt());
+                fromAmount.amount(), toAmount.amount(), priced.effectiveRate(), quote.expiresAt());
     }
 
     @Override
@@ -128,26 +113,6 @@ public class ConversionApplicationService implements QuoteConversionUseCase, Exe
         return new ConversionView(conversion.id().toString(), quoteId.toString(),
                 conversion.status().name(), quote.fromAmount().currency(), quote.toAmount().currency(),
                 quote.fromAmount().amount(), quote.toAmount().amount(), quote.rate(), now);
-    }
-
-    private BigDecimal fetchAndValidateRate(Currency from, Currency to) {
-        ExchangeRateProvider.Rate rate = rateProvider.getRate(from, to);   // may throw RateUnavailable
-        BigDecimal value = rate.rate();
-        if (value == null || value.signum() <= 0) {
-            throw new InvalidRateException("exchange rate for " + from + "->" + to + " was non-positive");
-        }
-
-        Optional<BigDecimal> previous = rateReference.lastRate(from, to);
-        if (previous.isPresent()) {
-            BigDecimal deviation = value.subtract(previous.get()).abs()
-                    .divide(previous.get(), 8, RoundingMode.HALF_UP);
-            if (deviation.compareTo(properties.conversion().maxRateDeviation()) > 0) {
-                throw new InvalidRateException("exchange rate for " + from + ":" + to + " moved "
-                        + deviation + ", exceeding the safety threshold; refusing to quote");
-            }
-        }
-        rateReference.record(from, to, value, clock.instant());
-        return value;
     }
 
     private UUID parseQuoteId(String raw) {

@@ -59,24 +59,51 @@ curl $B/merchants/1/withdrawals/$WID
 
 # Audit trail — explains how any balance reached its value
 curl "$B/merchants/1/accounts/USDT/ledger"
+
+# Task 4 — accept an incoming crypto payment (pending -> available at N confirmations)
+TX="0x$(date +%s)"
+curl -X POST $B/internal/incoming-payments -H 'Content-Type: application/json' \
+  -d "{\"merchantId\":1,\"txHash\":\"$TX\",\"outputIndex\":0,\"currency\":\"USDT\",\"amount\":\"100.000000\",\"confirmations\":1}"
+curl $B/merchants/1/balances            # shows pendingIncoming=100, balance unchanged
+curl -X POST $B/internal/incoming-payments -H 'Content-Type: application/json' \
+  -d "{\"merchantId\":1,\"txHash\":\"$TX\",\"outputIndex\":0,\"currency\":\"USDT\",\"amount\":\"100.000000\",\"confirmations\":3}"
+curl $B/merchants/1/incoming-payments   # CONFIRMED; funds now spendable
+
+# Task 5 — auto-settle: merchant 1 is seeded to convert 50% of incoming USDT to ZAR at market rate.
+curl $B/merchants/1/auto-settle-rules
+# ... a moment after the payment confirms, half the USDT is converted to ZAR (settleStatus=SETTLED).
+curl -X PUT $B/merchants/1/auto-settle-rules/USDT -H 'Content-Type: application/json' \
+  -d '{"targetCurrency":"ZAR","percentage":"75.0","enabled":true}'
+
+# Task 6 — payout routing: a ZAR withdrawal routes to a partner by country/currency/limit/health.
+curl -X POST $B/merchants/1/withdrawals -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: wd-zar-1' \
+  -d '{"currency":"ZAR","amount":"500.00","destination":{"accountNumber":"12345678","bankCode":"632005"}}'
+# small ZAR -> za-swift-eft (priority 1); >1000 ZAR bypasses its cap -> za-payfast.
+curl $B/internal/payout-partners
+curl -X PATCH $B/internal/payout-partners/za-swift-eft -H 'Content-Type: application/json' \
+  -d '{"healthy":false}'          # toggling health demonstrates live failover
+# A KES withdrawal has no partner -> 422 NO_PAYOUT_ROUTE.
 ```
 
-## Postman collection
+## API collection
 
-A ready-to-run collection lives in [`postman/`](postman/):
+A ready-to-run collection lives in [`bruno-collection/`](bruno-collection/) (Postman v2.1 JSON,
+so it imports into Postman or runs with Newman, and converts to Bruno):
 
-- `postman/ezeebit-wallet.postman_collection.json` — every endpoint with happy-path and
+- `bruno-collection/ezeebit-wallet.bruno_collection.json` — every endpoint with happy-path and
   error/edge cases (idempotency replay & conflict, quote reuse, insufficient funds, over-limit,
-  invalid destination, missing header), chained via variables (`quoteId`, `withdrawalId`, …) and
-  with test assertions on status codes and RFC-7807 `code`s.
-- `postman/ezeebit-local.postman_environment.json` — points at `http://localhost:8080`, merchant `1`.
+  invalid destination, missing header, incoming-payment replay/conflict, auto-settle wait,
+  payout failover, no-route), chained via variables (`quoteId`, `withdrawalId`, `txHash`, …) and
+  with test assertions on status codes and RFC-7807 `code`s. Folders are grouped by task.
+- `bruno-collection/ezeebit-local.bruno_environment.json` — points at `http://localhost:8080`, merchant `1`.
 
-Import both into Postman and run the folders top-to-bottom, or from the CLI with
+Run the folders top-to-bottom in Postman, or from the CLI with
 [Newman](https://github.com/postmanlabs/newman):
 
 ```bash
-npx newman run postman/ezeebit-wallet.postman_collection.json \
-  -e postman/ezeebit-local.postman_environment.json
+npx newman run bruno-collection/ezeebit-wallet.bruno_collection.json \
+  -e bruno-collection/ezeebit-local.bruno_environment.json
 ```
 
 ## API
@@ -91,13 +118,24 @@ returns the original result instead of repeating the effect.
 | `GET  /merchants/{id}/accounts/{currency}/ledger` | Audit history, cursor-paginated `?before=<id>&limit=` (Task 1) |
 | `POST /merchants/{id}/conversions/quotes` | Get a rate quote, locked for a short TTL (Task 2) |
 | `POST /merchants/{id}/conversions` | Execute a conversion against a quote id (Task 2) |
-| `POST /merchants/{id}/withdrawals` | Request a payout; holds funds immediately (Task 3) |
-| `GET  /merchants/{id}/withdrawals/{withdrawalId}` | Withdrawal status (Task 3) |
+| `POST /merchants/{id}/withdrawals` | Request a payout; holds funds immediately, routes to a partner (Task 3/6) |
+| `GET  /merchants/{id}/withdrawals/{withdrawalId}` | Withdrawal status, incl. routed `partnerCode` (Task 3/6) |
 | `POST /internal/payout-callbacks` | Payout-rail settlement webhook (Task 3) |
+| `POST /internal/incoming-payments` | Blockchain confirmation webhook; pending→available (Task 4) |
+| `GET  /merchants/{id}/incoming-payments` | List incoming payments (Task 4) |
+| `GET  /merchants/{id}/auto-settle-rules` | List auto-settle rules (Task 5) |
+| `PUT  /merchants/{id}/auto-settle-rules/{sourceCurrency}` | Upsert an auto-settle rule (Task 5) |
+| `GET  /internal/payout-partners` | List payout partner registry (Task 6) |
+| `PATCH /internal/payout-partners/{code}` | Toggle a partner's health, e.g. `{"healthy":false}` (Task 6) |
+
+The `GET /merchants/{id}/balances` response now includes `pendingIncoming` per currency — money
+seen on-chain but not yet confirmed (visible, unspendable, never on the ledger).
 
 Errors are returned as RFC-7807 problem responses with a stable `code`, e.g.
 `INSUFFICIENT_FUNDS` (422), `QUOTE_EXPIRED` (409), `RATE_UNAVAILABLE` (503),
-`WITHDRAWAL_LIMIT_EXCEEDED` (422), `INVALID_DESTINATION` (422).
+`WITHDRAWAL_LIMIT_EXCEEDED` (422), `INVALID_DESTINATION` (422),
+`INCOMING_PAYMENT_CONFLICT` (409), `NO_PAYOUT_ROUTE` (422), `PARTNER_UNAVAILABLE` (503),
+`PARTNER_NOT_FOUND` (404).
 
 Supported currencies: `ZAR`, `NGN`, `KES` (fiat), `USDT`, `USDC` (stablecoin).
 
@@ -128,7 +166,10 @@ driven from config (`src/main/resources/application.yml`, prefix `wallet.*`):
 | `wallet.conversion.max-rate-deviation` | Reject a feed rate that jumps more than this |
 | `wallet.exchange-rate.latency-ms` / `failure-rate` | Inject slowness / timeouts in the rate feed |
 | `wallet.payout.settlement-delay-ms` / `failure-rate` | Simulate async settlement delay / failed payouts |
+| `wallet.payout.pending-deadline-ms` | How long a held payout may stay PENDING before the sweeper fails + releases it |
+| `wallet.payout.partners.<code>.{failure-rate,unavailable,settlement-delay-ms}` | Per-partner stub overrides (fall back to the globals); `unavailable=true` forces failover |
 | `wallet.withdrawal.max-per-currency` | Default per-currency single-withdrawal cap (per-merchant DB override wins) |
+| `wallet.incoming.confirmation-threshold` | On-chain confirmations before an incoming payment becomes spendable (Task 4) |
 | `wallet.outbox.poll-interval-ms` | How often the outbox relay polls for due events |
 
 ## Tests
@@ -144,9 +185,14 @@ mvn verify
   overdraw, duplicate deposits/withdrawals apply once, conversion quote→execute is idempotent
   and single-use, a failed payout releases the held funds, the outbox relay drives submission and
   settlement, the shared rate guard rejects a wild rate move, withdrawal limits and destination
-  validation are enforced, and cursor pagination walks the ledger. A randomised property-style test
-  hammers the wallet with mixed operations. Every integration test asserts the ledger invariant
-  `SUM(ledger entries) == account balance`.
+  validation are enforced, and cursor pagination walks the ledger. Task 4/5/6 add: incoming
+  payments credit exactly once through duplicate/out-of-order/conflicting notifications
+  (`IncomingPaymentIT`); auto-settle converts at market rate and is crash-safe under a rate-feed
+  outage (`AutoSettleIT`, `AutoSettleRetryIT`); payouts route by country/currency/limit/health
+  with priority failover, hold-and-retry when partners are down, terminal release past the
+  deadline, and `NO_PAYOUT_ROUTE` for an unroutable currency (`PayoutRoutingIT`, `PayoutFailoverIT`).
+  A randomised property-style test hammers the wallet with mixed operations. Every integration
+  test asserts the ledger invariant `SUM(ledger entries) == account balance`.
 
 > **Note on recent Docker Engine:** the integration tests pin the Docker Engine API version
 > to `1.44` (via `maven-failsafe-plugin`) because Docker Engine 29+ raised its minimum

@@ -60,12 +60,22 @@ public abstract class AbstractIntegrationTest {
         // accounts, and withdrawal limits.
         jdbc.update("DELETE FROM outbox_event");
         jdbc.update("DELETE FROM ledger_entry");
+        jdbc.update("DELETE FROM incoming_payment");   // FK to conversion — delete before conversion
         jdbc.update("DELETE FROM conversion");
         jdbc.update("DELETE FROM conversion_quote");
         jdbc.update("DELETE FROM withdrawal");
         jdbc.update("DELETE FROM idempotency_record");
         jdbc.update("DELETE FROM rate_observation");
         jdbc.update("UPDATE account SET balance = 0, version = 0");
+
+        // Auto-settle rules are seeded reference data; reset to the single seeded rule
+        // (merchant 1: USDT -> ZAR 50%) so each test starts from a known configuration.
+        jdbc.update("DELETE FROM auto_settle_rule");
+        jdbc.update("INSERT INTO auto_settle_rule (merchant_id, source_currency, target_currency, "
+                + "percentage, enabled) VALUES (1, 'USDT', 'ZAR', 50.0000, 1)");
+
+        // Payout partners are seeded reference data; only reset the health toggled by tests.
+        jdbc.update("UPDATE payout_partner SET healthy = TRUE");
     }
 
     /**

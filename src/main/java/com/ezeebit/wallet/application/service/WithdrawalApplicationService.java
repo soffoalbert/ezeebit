@@ -4,6 +4,7 @@ import com.ezeebit.wallet.application.port.in.GetWithdrawalUseCase;
 import com.ezeebit.wallet.application.port.in.HandlePayoutResultUseCase;
 import com.ezeebit.wallet.application.port.in.RequestWithdrawalUseCase;
 import com.ezeebit.wallet.application.port.in.SubmitWithdrawalUseCase;
+import com.ezeebit.wallet.application.port.out.MerchantDirectory;
 import com.ezeebit.wallet.application.port.out.OutboxRepository;
 import com.ezeebit.wallet.application.port.out.PayoutRail;
 import com.ezeebit.wallet.application.port.out.WithdrawalLimitRepository;
@@ -11,12 +12,17 @@ import com.ezeebit.wallet.application.port.out.WithdrawalRepository;
 import com.ezeebit.wallet.application.service.support.PayoutDestinationValidator;
 import com.ezeebit.wallet.application.service.support.RequestHash;
 import com.ezeebit.wallet.config.WalletProperties;
+import com.ezeebit.wallet.domain.exception.NoPayoutRouteException;
+import com.ezeebit.wallet.domain.exception.RailUnavailableException;
 import com.ezeebit.wallet.domain.exception.WithdrawalLimitExceededException;
 import com.ezeebit.wallet.domain.exception.WithdrawalNotFoundException;
 import com.ezeebit.wallet.domain.model.LedgerEntryType;
 import com.ezeebit.wallet.domain.model.Money;
 import com.ezeebit.wallet.domain.model.OutboxEvent;
+import com.ezeebit.wallet.domain.model.PayoutPartner;
+import com.ezeebit.wallet.domain.model.RoutingPlan;
 import com.ezeebit.wallet.domain.model.Withdrawal;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -55,7 +61,10 @@ public class WithdrawalApplicationService
     private final OutboxRepository outbox;
     private final WithdrawalLimitRepository limits;
     private final PayoutDestinationValidator destinationValidator;
+    private final PayoutRoutingService routing;
+    private final MerchantDirectory merchants;
     private final IdempotencyGuard idempotency;
+    private final MeterRegistry meters;
     private final WalletProperties properties;
     private final Clock clock;
 
@@ -63,15 +72,19 @@ public class WithdrawalApplicationService
                                         PayoutRail rail, OutboxRepository outbox,
                                         WithdrawalLimitRepository limits,
                                         PayoutDestinationValidator destinationValidator,
-                                        IdempotencyGuard idempotency, WalletProperties properties,
-                                        Clock clock) {
+                                        PayoutRoutingService routing, MerchantDirectory merchants,
+                                        IdempotencyGuard idempotency, MeterRegistry meters,
+                                        WalletProperties properties, Clock clock) {
         this.withdrawals = withdrawals;
         this.posting = posting;
         this.rail = rail;
         this.outbox = outbox;
         this.limits = limits;
         this.destinationValidator = destinationValidator;
+        this.routing = routing;
+        this.merchants = merchants;
         this.idempotency = idempotency;
+        this.meters = meters;
         this.properties = properties;
         this.clock = clock;
     }
@@ -88,6 +101,13 @@ public class WithdrawalApplicationService
         }
         destinationValidator.validate(command.currency(), command.destination());
         enforceLimit(command.merchantId(), amount);
+
+        // Reject a structurally impossible payout (no partner for this country+currency, or the
+        // amount exceeds every partner's limit) BEFORE holding any funds — a 422, not a held hold.
+        String country = merchants.countryOf(command.merchantId());
+        if (!routing.structuralRouteExists(country, amount)) {
+            throw new NoPayoutRouteException(country, command.currency());
+        }
 
         String hash = RequestHash.of(command.merchantId(), command.currency(),
                 amount.amount(), command.destination());
@@ -130,11 +150,60 @@ public class WithdrawalApplicationService
         if (withdrawal.status() != Withdrawal.Status.PENDING) {
             return;   // already submitted or resolved — nothing to do
         }
-        // The rail call is idempotent on the withdrawal id, so re-submitting is safe.
-        PayoutRail.Submission submission = rail.submit(withdrawal.id(), withdrawal.amount(),
-                withdrawal.destination());
-        withdrawal.markSubmitted(submission.payoutReference(), clock.instant());
-        withdrawals.save(withdrawal);
+
+        String country = merchants.countryOf(withdrawal.merchantId());
+        RoutingPlan plan = routing.plan(country, withdrawal.amount());
+
+        if (!plan.hasEligible()) {
+            if (plan.isTransientlyUnroutable()) {
+                // Every candidate is merely unhealthy: keep the funds held and retry later.
+                throw new RailUnavailableException(
+                        "all payout partners for " + withdrawal.amount().currency() + " are unhealthy");
+            }
+            // No usable route (config changed since the request): terminal — release the funds.
+            failAndRelease(withdrawal, "no payout route available", clock.instant());
+            return;
+        }
+
+        // Try eligible partners in priority order, failing over on a synchronous unavailability.
+        for (PayoutPartner partner : plan.eligible()) {
+            try {
+                // The rail call is idempotent on the withdrawal id, so re-submitting is safe.
+                PayoutRail.Submission submission = rail.submit(partner, withdrawal.id(),
+                        withdrawal.amount(), withdrawal.destination());
+                withdrawal.markSubmitted(submission.payoutReference(), partner.code(), clock.instant());
+                withdrawals.save(withdrawal);
+                meters.counter("wallet.payout.routed", "partner", partner.code()).increment();
+                return;
+            } catch (RailUnavailableException e) {
+                meters.counter("wallet.payout.failover", "from", partner.code()).increment();
+                log.warn("payout partner {} unavailable for withdrawal {}, failing over: {}",
+                        partner.code(), withdrawal.id(), e.getMessage());
+            }
+        }
+
+        // All eligible partners rejected synchronously: stays PENDING, retried by outbox/sweeper.
+        throw new RailUnavailableException(
+                "all eligible payout partners rejected withdrawal " + withdrawal.id());
+    }
+
+    @Override
+    @Transactional
+    public void failExpired(UUID withdrawalId) {
+        Withdrawal withdrawal = withdrawals.lockForUpdate(withdrawalId)
+                .orElseThrow(() -> new WithdrawalNotFoundException(withdrawalId.toString()));
+        if (withdrawal.status() != Withdrawal.Status.PENDING) {
+            return;   // it got submitted/resolved in the meantime
+        }
+        failAndRelease(withdrawal, "payout deadline exceeded; no partner accepted it", clock.instant());
+    }
+
+    private void failAndRelease(Withdrawal withdrawal, String reason, Instant now) {
+        if (withdrawal.markFailed(reason, now)) {
+            posting.post(withdrawal.merchantId(), LedgerEntryType.WITHDRAWAL_RELEASE,
+                    withdrawal.amount(), withdrawal.operationId(), "withdrawal " + withdrawal.id());
+            withdrawals.save(withdrawal);
+        }
     }
 
     @Override
@@ -176,8 +245,8 @@ public class WithdrawalApplicationService
 
     private WithdrawalView toView(Withdrawal w) {
         return new WithdrawalView(w.id().toString(), w.merchantId(), w.amount().currency(),
-                w.amount().amount(), w.status().name(), w.payoutReference(), w.failureReason(),
-                w.createdAt(), w.updatedAt());
+                w.amount().amount(), w.status().name(), w.payoutReference(), w.partnerCode(),
+                w.failureReason(), w.createdAt(), w.updatedAt());
     }
 
     private UUID parseId(String raw) {

@@ -36,7 +36,7 @@ class MerchantAccountControllerTest {
     @Test
     void depositReturnsBalance() throws Exception {
         when(depositFunds.deposit(any()))
-                .thenReturn(new BalanceView(1L, Currency.ZAR, new BigDecimal("100.00")));
+                .thenReturn(new BalanceView(1L, Currency.ZAR, new BigDecimal("100.00"), BigDecimal.ZERO));
 
         mvc.perform(post("/merchants/1/deposits")
                         .header("Idempotency-Key", "dep-1")
@@ -44,7 +44,8 @@ class MerchantAccountControllerTest {
                         .content("{\"currency\":\"ZAR\",\"amount\":\"100.00\"}"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.currency").value("ZAR"))
-                .andExpect(jsonPath("$.balance").value(100.00));
+                .andExpect(jsonPath("$.balance").value(100.00))
+                .andExpect(jsonPath("$.pendingIncoming").value(0));
     }
 
     @Test

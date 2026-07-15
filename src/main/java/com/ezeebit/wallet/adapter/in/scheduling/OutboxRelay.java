@@ -47,7 +47,8 @@ public class OutboxRelay {
         this.clock = clock;
     }
 
-    @Scheduled(fixedDelayString = "${wallet.outbox.poll-interval-ms:1000}")
+    @Scheduled(fixedDelayString = "${wallet.outbox.poll-interval-ms:1000}",
+               initialDelayString = "${wallet.outbox.poll-interval-ms:1000}")
     public void poll() {
         Instant now = clock.instant();
         Instant staleBefore = now.minus(STALE_CLAIM);

@@ -25,13 +25,14 @@ public final class Withdrawal {
     private final String destination;   // opaque JSON (bank details / chain address)
     private Status status;
     private String payoutReference;
+    private String partnerCode;         // the routed partner, set at submission (Task 6)
     private String failureReason;
     private final UUID operationId;
     private final Instant createdAt;
     private Instant updatedAt;
 
     public Withdrawal(UUID id, long merchantId, String idempotencyKey, Money amount,
-                      String destination, Status status, String payoutReference,
+                      String destination, Status status, String payoutReference, String partnerCode,
                       String failureReason, UUID operationId, Instant createdAt, Instant updatedAt) {
         this.id = Objects.requireNonNull(id);
         this.merchantId = merchantId;
@@ -40,6 +41,7 @@ public final class Withdrawal {
         this.destination = Objects.requireNonNull(destination);
         this.status = Objects.requireNonNull(status);
         this.payoutReference = payoutReference;
+        this.partnerCode = partnerCode;
         this.failureReason = failureReason;
         this.operationId = Objects.requireNonNull(operationId);
         this.createdAt = createdAt;
@@ -49,14 +51,15 @@ public final class Withdrawal {
     public static Withdrawal requested(long merchantId, String idempotencyKey, Money amount,
                                        String destination, Instant now) {
         return new Withdrawal(UUID.randomUUID(), merchantId, idempotencyKey, amount, destination,
-                Status.PENDING, null, null, UUID.randomUUID(), now, now);
+                Status.PENDING, null, null, null, UUID.randomUUID(), now, now);
     }
 
-    /** The funds are held and the request has been accepted by the rail. */
-    public void markSubmitted(String payoutReference, Instant now) {
+    /** The funds are held and the chosen partner accepted the request. */
+    public void markSubmitted(String payoutReference, String partnerCode, Instant now) {
         requireStatus(Status.PENDING);
         this.status = Status.SUBMITTED;
         this.payoutReference = payoutReference;
+        this.partnerCode = partnerCode;
         this.updatedAt = now;
     }
 
@@ -100,6 +103,7 @@ public final class Withdrawal {
     public String destination() { return destination; }
     public Status status() { return status; }
     public String payoutReference() { return payoutReference; }
+    public String partnerCode() { return partnerCode; }
     public String failureReason() { return failureReason; }
     public UUID operationId() { return operationId; }
     public Instant createdAt() { return createdAt; }

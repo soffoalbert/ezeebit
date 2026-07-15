@@ -2,6 +2,7 @@ package com.ezeebit.wallet.adapter.in.scheduling;
 
 import com.ezeebit.wallet.application.port.in.SubmitWithdrawalUseCase;
 import com.ezeebit.wallet.application.port.out.WithdrawalRepository;
+import com.ezeebit.wallet.config.WalletProperties;
 import com.ezeebit.wallet.domain.model.Withdrawal;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -10,6 +11,7 @@ import org.springframework.stereotype.Component;
 
 import java.time.Clock;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 
 /**
@@ -27,25 +29,37 @@ class WithdrawalRecoverySweeper {
 
     private final WithdrawalRepository withdrawals;
     private final SubmitWithdrawalUseCase submitWithdrawal;
+    private final WalletProperties properties;
     private final Clock clock;
 
     WithdrawalRecoverySweeper(WithdrawalRepository withdrawals,
-                              SubmitWithdrawalUseCase submitWithdrawal, Clock clock) {
+                              SubmitWithdrawalUseCase submitWithdrawal,
+                              WalletProperties properties, Clock clock) {
         this.withdrawals = withdrawals;
         this.submitWithdrawal = submitWithdrawal;
+        this.properties = properties;
         this.clock = clock;
     }
 
-    @Scheduled(fixedDelayString = "${wallet.payout.sweeper-interval-ms:15000}")
+    @Scheduled(fixedDelayString = "${wallet.payout.sweeper-interval-ms:15000}",
+               initialDelayString = "${wallet.payout.sweeper-interval-ms:15000}")
     void resubmitStalePending() {
-        List<Withdrawal> stale = withdrawals.findStalePending(
-                clock.instant().minus(STALE_AFTER), BATCH);
+        Instant now = clock.instant();
+        Instant deadline = now.minusMillis(properties.payout().pendingDeadlineMs());
+        List<Withdrawal> stale = withdrawals.findStalePending(now.minus(STALE_AFTER), BATCH);
         for (Withdrawal w : stale) {
-            log.info("recovery sweeper re-submitting stale PENDING withdrawal {}", w.id());
             try {
-                submitWithdrawal.submit(w.id());
+                if (w.createdAt().isBefore(deadline)) {
+                    // Held too long with no partner able to accept it: fail it and release the
+                    // funds so money is never stuck, instead of retrying forever.
+                    log.warn("recovery sweeper failing expired PENDING withdrawal {}", w.id());
+                    submitWithdrawal.failExpired(w.id());
+                } else {
+                    log.info("recovery sweeper re-submitting stale PENDING withdrawal {}", w.id());
+                    submitWithdrawal.submit(w.id());
+                }
             } catch (RuntimeException e) {
-                log.warn("sweeper failed to submit {}: {}", w.id(), e.getMessage());
+                log.warn("sweeper could not process {}: {}", w.id(), e.getMessage());
             }
         }
     }

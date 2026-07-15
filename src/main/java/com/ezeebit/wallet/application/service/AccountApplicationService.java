@@ -5,6 +5,7 @@ import com.ezeebit.wallet.application.port.in.DepositFundsUseCase;
 import com.ezeebit.wallet.application.port.in.GetBalancesUseCase;
 import com.ezeebit.wallet.application.port.in.GetLedgerHistoryUseCase;
 import com.ezeebit.wallet.application.port.out.AccountRepository;
+import com.ezeebit.wallet.application.port.out.IncomingPaymentRepository;
 import com.ezeebit.wallet.application.port.out.LedgerRepository;
 import com.ezeebit.wallet.application.service.support.RequestHash;
 import com.ezeebit.wallet.domain.exception.AccountNotFoundException;
@@ -15,7 +16,12 @@ import com.ezeebit.wallet.domain.model.Money;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 
 /**
@@ -31,13 +37,16 @@ public class AccountApplicationService
     private final LedgerPostingService posting;
     private final AccountRepository accounts;
     private final LedgerRepository ledger;
+    private final IncomingPaymentRepository incomingPayments;
     private final IdempotencyGuard idempotency;
 
     public AccountApplicationService(LedgerPostingService posting, AccountRepository accounts,
-                                     LedgerRepository ledger, IdempotencyGuard idempotency) {
+                                     LedgerRepository ledger, IncomingPaymentRepository incomingPayments,
+                                     IdempotencyGuard idempotency) {
         this.posting = posting;
         this.accounts = accounts;
         this.ledger = ledger;
+        this.incomingPayments = incomingPayments;
         this.idempotency = idempotency;
     }
 
@@ -62,9 +71,22 @@ public class AccountApplicationService
     @Override
     @Transactional(readOnly = true)
     public List<BalanceView> balancesOf(long merchantId) {
-        return accounts.findAllForMerchant(merchantId).stream()
-                .map(BalanceView::of)
-                .toList();
+        Map<Currency, BigDecimal> pending = incomingPayments.pendingTotals(merchantId);
+        Map<Currency, BigDecimal> spendable = new java.util.EnumMap<>(Currency.class);
+        accounts.findAllForMerchant(merchantId)
+                .forEach(a -> spendable.put(a.currency(), a.balance().amount()));
+
+        // Union of currencies the merchant has any spendable or pending money in.
+        Set<Currency> currencies = new LinkedHashSet<>(spendable.keySet());
+        currencies.addAll(pending.keySet());
+
+        List<BalanceView> views = new ArrayList<>();
+        for (Currency currency : currencies) {
+            views.add(new BalanceView(merchantId, currency,
+                    spendable.getOrDefault(currency, BigDecimal.ZERO),
+                    pending.getOrDefault(currency, BigDecimal.ZERO)));
+        }
+        return views;
     }
 
     @Override

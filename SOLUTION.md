@@ -12,7 +12,7 @@ money — and each one exercises a different correctness concern the brief cares
 | 2 — Convert | Handling a slow, moving external price; quote/execute separation |
 | 3 — Withdraw | Idempotency under duplicate requests; async settlement; holds & compensation |
 
-Tasks 4–6 reuse the same ports and the same ledger; how they slot in is described at the end.
+Tasks 4–6 are implemented on the same ports and the same ledger; each has its own section below.
 
 ## Architecture — hexagonal (ports & adapters)
 
@@ -117,25 +117,82 @@ State machine: `PENDING → SUBMITTED → COMPLETED | FAILED`.
 - **Duplicate requests over flaky mobile:** the `Idempotency-Key` contract, backed by a unique
   constraint.
 - **Failed payout:** compensating ledger release; the balance is always right.
+- **Rate feed down at auto-settle:** the failure propagates, the payment stays `REQUESTED`, and the
+  outbox retries with backoff until the feed recovers — no partial settlement (Task 5).
+- **Payout partner down:** priority failover to the next partner; if all are unhealthy the funds stay
+  held and are retried, and a payout that can never route is failed-and-released past its deadline so
+  money is never stuck (Task 6).
 
-## How the remaining tasks slot into the same design
+## Task 4 — accept an incoming crypto payment (pending → available)
 
-- **Task 4 (incoming crypto):** add a driving adapter for the blockchain-confirmation webhook →
-  a `CreditIncomingPaymentUseCase`. Dedupe by `(tx_hash, output_index)`; confirmation levels map to
-  new ledger entry types on the *same* ledger (a pending vs available split). No new architecture.
-- **Task 5 (auto-settle):** `LedgerPostingService` publishes a `FundsCredited` domain event; a policy
-  service holding each merchant's rule reacts by calling the *existing* `ExecuteConversion` use case
-  (a market-rate variant of quote→execute), with a retry queue when the feed is down.
-- **Task 6 (payout routing):** `PayoutRail` is already a port. Routing becomes a composite adapter
-  that picks a country/partner by limits and health and falls back on failure — with the same
-  hold/settle/release ledger semantics, so a partner failure is just a `RELEASE`.
+The confirmation service notifies us (at-least-once, possibly out of order) as an on-chain payment
+gains confirmations. Each notification locks-or-inserts an `incoming_payment` row keyed by
+`(tx_hash, output_index)` — the unique constraint is the arbiter of the first-insert race (a lost
+race becomes a retryable `CONCURRENT_REQUEST`, exactly like the idempotency store).
+
+- **Pending never touches the ledger.** `account.balance` stays the single spendable balance and the
+  invariant `SUM(entries) == balance` holds trivially. A first sighting is a `PENDING` row: visible
+  on `GET /balances` as `pendingIncoming` (summed from `incoming_payment`, not the ledger), but
+  unspendable. Only when the confirmation count reaches `wallet.incoming.confirmation-threshold`
+  (default 3) is a single `INCOMING_CREDIT(+1)` posted, making the funds spendable.
+- **Counted exactly once.** Confirmations are folded in as a monotonic maximum, so a duplicate or
+  regressed notification is a silent no-op; `confirm(...)` is single-shot (PENDING → CONFIRMED), so
+  the credit is posted exactly once no matter how the notifications interleave. A replay whose
+  immutable facts (merchant/currency/amount) disagree with the recorded row is a `409
+  INCOMING_PAYMENT_CONFLICT`.
+- **Decoupling stays outbox-only.** There are no Spring domain events anywhere in this codebase, so
+  rather than introduce a `FundsCredited` event, confirming a payment appends one
+  `INCOMING_PAYMENT_CONFIRMED` outbox event *in the same transaction* as the credit. The relay drives
+  auto-settle — free crash-safety, consistent with Task 3's payout submission.
+
+## Task 5 — auto-settle at market rate
+
+An `auto_settle_rule` (one per `(merchant, source_currency)`, seeded: merchant 1 converts 50% of
+incoming USDT to ZAR) is applied when funds become available. The outbox dispatches
+`INCOMING_PAYMENT_CONFIRMED` to `AutoSettleApplicationService`, which:
+
+- **Prices at execution time**, reusing the exact same `ConversionPricer` as merchant quotes —
+  the same sign/deviation guard against a bad feed, the same 0.005 spread in the platform's favour,
+  the same round-DOWN on the received amount. The conversion is quote-less: `conversion.quote_id`
+  became nullable and rows carry a `trigger_type` (`QUOTED` | `AUTO_SETTLE`) and back-link to the
+  `incoming_payment`. The portion is `amount × percentage` rounded DOWN so the platform never
+  over-converts; a rounds-to-zero portion is recorded as `SKIPPED`.
+- **Is idempotent via a state machine, not a lock alone.** The payment's `settle_status`
+  (`NONE → REQUESTED → SETTLED | SKIPPED`) is row-locked; an outbox redelivery finds it no longer
+  `REQUESTED` and does nothing, so it can never double-convert.
+- **Is crash-safe when the feed is down.** `RateUnavailable`/`InvalidRate` propagate, the transaction
+  rolls back leaving the payment `REQUESTED`, and the outbox retries with exponential backoff
+  (10 attempts ≈ up to ~1h) until the feed recovers — no money moved, nothing lost.
+
+## Task 6 — payout routing with failover
+
+A DB-backed `payout_partner` registry (one row per `(partner, currency)` route: `code`, nullable
+`country`, `currency`, nullable `per_tx_limit`, `healthy`, `priority`) replaces the single rail.
+Routing is an application service (`PayoutRoutingService`), not a composite adapter: the decision is
+business policy that deserves visibility, attribution and unit tests, so `PayoutRail` stays pure
+transport and now takes the chosen partner.
+
+- **Fail fast, before holding funds.** `request()` checks a *structural* route exists (country +
+  currency + limit, ignoring health); if none can ever serve it, that's a `422 NO_PAYOUT_ROUTE` and
+  no funds are held (e.g. a KES payout — there is deliberately no KES partner).
+- **Priority failover.** `submit()` tries eligible partners in priority order; a partner that is
+  synchronously unavailable (`PARTNER_UNAVAILABLE`) triggers failover to the next (a low-limit
+  priority-1 ZA partner also demonstrates limit-bypass to the fallback for large amounts).
+- **Transient vs terminal is the careful branch.** If nothing is eligible: all-unhealthy is
+  *transient* — throw so the withdrawal stays `PENDING` with funds held and the outbox/sweeper retry;
+  a structural change (route genuinely gone) is *terminal* — `markFailed` + `WITHDRAWAL_RELEASE`.
+- **Money is never stuck.** The recovery sweeper fails-and-releases a `PENDING` payout older than
+  `wallet.payout.pending-deadline-ms` instead of retrying forever. A partner failure is otherwise
+  just the existing hold/settle/release ledger dance, so nothing new is needed for correctness.
+- **Reference** is `payout_<partnerCode>_<withdrawalId>` — deterministic per partner + withdrawal, so
+  re-submitting the same withdrawal to the same partner is idempotent on the rail side.
 
 ## Assumptions
 
 - A merchant is identified by an id in the request; no auth/KYC (per the brief). Merchants `1`/`2`
   and their zero accounts are seeded by Flyway.
-- Deposits and incoming funds are trusted inputs (Task 1 says "money arrives"); real deposits would
-  come from Task 4's confirmation flow.
+- The `POST /deposits` endpoint is a trusted test seam for putting money in (Task 1 says "money
+  arrives"); real on-chain deposits arrive through Task 4's confirmation flow, which is implemented.
 - Rounding on conversion is **against the merchant** (received amount rounded down) so rounding never
   favours them; the spread is the platform's margin.
 - The spread is the platform's margin; rounding on conversion is against the merchant.
@@ -188,3 +245,16 @@ The following were built out beyond the core three tasks (see the commit history
   reconciled only by the recovery sweeper (funds remain safely held meanwhile, never lost).
 - Limits are per-withdrawal, not rolling-window; destination validation is structural, not scheme-aware.
 - The rate-deviation reference keeps only the last value per pair, not a time-weighted band.
+- **Blockchain reorgs are out of scope.** An incoming payment is `PENDING` then terminal `CONFIRMED`;
+  a reorg that un-confirms a credited payment is not handled. The extension point is an `ORPHANED`
+  status plus a compensating `INCOMING_REVERSAL(-1)` ledger entry (and unwinding any auto-settle),
+  which the existing state machine and single-writer ledger are shaped to accommodate.
+- **Auto-settle after the credit is spent.** If a merchant spends the just-credited stablecoin before
+  the relay runs auto-settle, the `CONVERSION_OUT` debit hits `InsufficientFunds`; the outbox retries
+  and eventually exhausts, leaving the payment stuck `REQUESTED`. Acceptable for the brief (funds are
+  never lost, only unsettled); a real system would settle synchronously at confirm time or reserve
+  the portion.
+- **Cross-partner double-submit on a crash between accept-and-commit.** Because the reference is
+  per-partner, a crash after a partner accepts but before we commit `SUBMITTED` could, on retry, route
+  to a *different* partner and double-pay — the same class of residual risk as the original single-rail
+  design. A shared idempotency token exchanged with the provider would close it.

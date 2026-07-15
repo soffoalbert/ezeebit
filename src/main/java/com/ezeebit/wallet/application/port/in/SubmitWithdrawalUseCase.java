@@ -9,4 +9,11 @@ import java.util.UUID;
  */
 public interface SubmitWithdrawalUseCase {
     void submit(UUID withdrawalId);
+
+    /**
+     * Terminally fail a payout that has been held but never submitted for longer than the
+     * configured deadline, releasing the held funds. The safety net that guarantees money is
+     * never stuck when no partner can accept a withdrawal.
+     */
+    void failExpired(UUID withdrawalId);
 }

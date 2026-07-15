@@ -14,5 +14,6 @@ public interface RequestWithdrawalUseCase {
 
     record WithdrawalView(String withdrawalId, long merchantId, Currency currency,
                           BigDecimal amount, String status, String payoutReference,
-                          String failureReason, Instant createdAt, Instant updatedAt) {}
+                          String partnerCode, String failureReason,
+                          Instant createdAt, Instant updatedAt) {}
 }

@@ -41,6 +41,30 @@
     {
       "key": "ledgerCursor",
       "value": ""
+    },
+    {
+      "key": "txHash",
+      "value": ""
+    },
+    {
+      "key": "settleTx",
+      "value": ""
+    },
+    {
+      "key": "zarWithdrawalId",
+      "value": ""
+    },
+    {
+      "key": "zarWdKey",
+      "value": ""
+    },
+    {
+      "key": "zarBigWithdrawalId",
+      "value": ""
+    },
+    {
+      "key": "zarBigKey",
+      "value": ""
     }
   ],
   "item": [
@@ -809,8 +833,8 @@
                   "const w = pm.response.json();",
                   "pm.test('status PENDING and holds funds', () => pm.expect(w.status).to.eql('PENDING'));",
                   "pm.environment.set('withdrawalId', w.withdrawalId);",
-                  "// The stub rail derives its reference deterministically from the id.",
-                  "pm.environment.set('payoutReference', 'payout_' + w.withdrawalId);"
+                  "// The payout reference now includes the routed partner code and is assigned at",
+                  "// submission (async), so capture it from the 'Get withdrawal status' poll instead."
                 ]
               }
             }
@@ -937,7 +961,7 @@
           }
         },
         {
-          "name": "Withdrawal — insufficient funds (NGN) → 422",
+          "name": "Withdrawal — insufficient funds (USDC) → 422",
           "event": [
             {
               "listen": "test",
@@ -964,7 +988,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{ \"currency\": \"NGN\", \"amount\": \"100.00\", \"destination\": { \"accountNumber\": \"12345678\", \"bankCode\": \"ABC\" } }",
+              "raw": "{ \"currency\": \"USDC\", \"amount\": \"10.000000\", \"destination\": { \"address\": \"chain-address-usdc-001\" } }",
               "options": {
                 "raw": {
                   "language": "json"
@@ -982,7 +1006,7 @@
                 "withdrawals"
               ]
             },
-            "description": "Merchant 1 holds no NGN, so this cannot be paid out. A merchant can never withdraw money they don't have."
+            "description": "USDC routes via the on-chain partner (any country), but merchant 1 holds no USDC, so the hold fails: a merchant can never withdraw money they don't have. (An unroutable currency like NGN/KES for this ZA merchant would instead be NO_PAYOUT_ROUTE, before any hold.)"
           }
         },
         {
@@ -1125,6 +1149,631 @@
                 "withdrawals"
               ]
             }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Task 4 · Incoming Payments",
+      "description": "Accept an incoming crypto payment through its pending -> available lifecycle. Dedupe by (txHash, outputIndex); credits exactly once at the confirmation threshold (default 3).",
+      "item": [
+        {
+          "name": "Notify — first sighting (conf 1) → 204",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.set('txHash', '0x' + pm.variables.replaceIn('{{$guid}}').replace(/-/g,''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204 No Content', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"merchantId\": {{merchantId}}, \"txHash\": \"{{txHash}}\", \"outputIndex\": 0, \"currency\": \"USDT\", \"amount\": \"100.000000\", \"confirmations\": 1 }",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/internal/incoming-payments",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "internal", "incoming-payments" ]
+            },
+            "description": "First notification: the payment is PENDING (visible, unspendable)."
+          }
+        },
+        {
+          "name": "Balances — shows pendingIncoming",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const usdt = pm.response.json().find(b => b.currency === 'USDT');",
+                  "pm.test('pendingIncoming is present', () => pm.expect(usdt).to.have.property('pendingIncoming'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/merchants/{{merchantId}}/balances",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "merchants", "{{merchantId}}", "balances" ]
+            },
+            "description": "Pending on-chain money is visible as pendingIncoming, separate from the spendable balance."
+          }
+        },
+        {
+          "name": "Notify — reach threshold (conf 3) → 204 (spendable)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204 No Content', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"merchantId\": {{merchantId}}, \"txHash\": \"{{txHash}}\", \"outputIndex\": 0, \"currency\": \"USDT\", \"amount\": \"100.000000\", \"confirmations\": 3 }",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/internal/incoming-payments",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "internal", "incoming-payments" ]
+            },
+            "description": "At the threshold the payment CONFIRMS: a single INCOMING_CREDIT makes the funds spendable."
+          }
+        },
+        {
+          "name": "Notify — idempotent replay (conf 3 again) → 204",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204 No Content (no double credit)', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"merchantId\": {{merchantId}}, \"txHash\": \"{{txHash}}\", \"outputIndex\": 0, \"currency\": \"USDT\", \"amount\": \"100.000000\", \"confirmations\": 3 }",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/internal/incoming-payments",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "internal", "incoming-payments" ]
+            },
+            "description": "A duplicate notification is a safe no-op — the payment is credited exactly once."
+          }
+        },
+        {
+          "name": "Notify — conflicting amount → 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('409 Conflict', () => pm.response.to.have.status(409));",
+                  "pm.test('code INCOMING_PAYMENT_CONFLICT', () => pm.expect(pm.response.json().code).to.eql('INCOMING_PAYMENT_CONFLICT'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"merchantId\": {{merchantId}}, \"txHash\": \"{{txHash}}\", \"outputIndex\": 0, \"currency\": \"USDT\", \"amount\": \"200.000000\", \"confirmations\": 4 }",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/internal/incoming-payments",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "internal", "incoming-payments" ]
+            },
+            "description": "A replay whose immutable facts (here the amount) disagree with the recorded payment is a genuine conflict."
+          }
+        },
+        {
+          "name": "List incoming payments",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const p = pm.response.json().find(x => x.txHash === pm.environment.get('txHash'));",
+                  "pm.test('payment is CONFIRMED', () => pm.expect(p.status).to.eql('CONFIRMED'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/merchants/{{merchantId}}/incoming-payments",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "merchants", "{{merchantId}}", "incoming-payments" ]
+            },
+            "description": "List the merchant's incoming payments and their settle status."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Task 5 · Auto-Settle",
+      "description": "Merchant 1 is seeded to convert 50% of every incoming USDT to ZAR at market rate. Auto-settle is driven by the outbox shortly after a payment confirms.",
+      "item": [
+        {
+          "name": "Get seeded auto-settle rules",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json().find(x => x.sourceCurrency === 'USDT');",
+                  "pm.test('USDT -> ZAR rule exists', () => pm.expect(r.targetCurrency).to.eql('ZAR'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/merchants/{{merchantId}}/auto-settle-rules",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "merchants", "{{merchantId}}", "auto-settle-rules" ]
+            }
+          }
+        },
+        {
+          "name": "Upsert rule (USDT → ZAR 50%)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('rule reflects the upsert', () => pm.expect(pm.response.json().targetCurrency).to.eql('ZAR'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"targetCurrency\": \"ZAR\", \"percentage\": \"50.0\", \"enabled\": true }",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/merchants/{{merchantId}}/auto-settle-rules/USDT",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "merchants", "{{merchantId}}", "auto-settle-rules", "USDT" ]
+            }
+          }
+        },
+        {
+          "name": "Upsert rule — invalid percentage (150) → 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('400 Bad Request', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PUT",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"targetCurrency\": \"ZAR\", \"percentage\": \"150.0\", \"enabled\": true }",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/merchants/{{merchantId}}/auto-settle-rules/USDT",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "merchants", "{{merchantId}}", "auto-settle-rules", "USDT" ]
+            },
+            "description": "Percentage must be in (0, 100]."
+          }
+        },
+        {
+          "name": "Trigger — confirm a fresh USDT payment",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.environment.set('settleTx', '0x' + pm.variables.replaceIn('{{$guid}}').replace(/-/g,''));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('204 No Content', () => pm.response.to.have.status(204));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"merchantId\": {{merchantId}}, \"txHash\": \"{{settleTx}}\", \"outputIndex\": 0, \"currency\": \"USDT\", \"amount\": \"100.000000\", \"confirmations\": 3 }",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/internal/incoming-payments",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "internal", "incoming-payments" ]
+            },
+            "description": "Confirm 100 USDT; auto-settle should convert 50 USDT -> ZAR shortly after."
+          }
+        },
+        {
+          "name": "Wait for settlement (poll until SETTLED)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const url = pm.environment.get('baseUrl') + '/merchants/' + pm.environment.get('merchantId') + '/incoming-payments';",
+                  "let attempts = 0;",
+                  "const poll = () => {",
+                  "  pm.sendRequest(url, (err, res) => {",
+                  "    attempts++;",
+                  "    const p = err ? null : res.json().find(x => x.txHash === pm.environment.get('settleTx'));",
+                  "    if (p && p.settleStatus === 'SETTLED') {",
+                  "      pm.test('auto-settle SETTLED', () => pm.expect(p.settleStatus).to.eql('SETTLED'));",
+                  "    } else if (attempts < 16) {",
+                  "      setTimeout(poll, 250);",
+                  "    } else {",
+                  "      pm.test('auto-settle SETTLED', () => pm.expect(p && p.settleStatus).to.eql('SETTLED'));",
+                  "    }",
+                  "  });",
+                  "};",
+                  "poll();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/merchants/{{merchantId}}/incoming-payments",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "merchants", "{{merchantId}}", "incoming-payments" ]
+            },
+            "description": "Polls until the outbox-driven auto-settle marks the payment SETTLED."
+          }
+        },
+        {
+          "name": "Balances reflect the settlement (ZAR credited)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "const zar = pm.response.json().find(b => b.currency === 'ZAR');",
+                  "pm.test('ZAR balance is positive', () => pm.expect(parseFloat(zar.balance)).to.be.above(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/merchants/{{merchantId}}/balances",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "merchants", "{{merchantId}}", "balances" ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Task 6 · Payout Routing",
+      "description": "Withdrawals are routed to a payout partner by country + currency + limit + health, with priority failover. Seeds: za-swift-eft (ZAR, cap 1000, prio 1), za-payfast (ZAR, prio 2). No KES partner exists.",
+      "item": [
+        {
+          "name": "Seed ZAR balance",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "seed-zar-routing" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"currency\": \"ZAR\", \"amount\": \"5000.00\" }",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/merchants/{{merchantId}}/deposits",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "merchants", "{{merchantId}}", "deposits" ]
+            }
+          }
+        },
+        {
+          "name": "Small ZAR withdrawal → za-swift-eft",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": { "type": "text/javascript", "exec": [ "pm.environment.set('zarWdKey', pm.variables.replaceIn('{{$guid}}'));" ] }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "pm.environment.set('zarWithdrawalId', pm.response.json().withdrawalId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{zarWdKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"currency\": \"ZAR\", \"amount\": \"500.00\", \"destination\": { \"accountNumber\": \"12345678\", \"bankCode\": \"632005\" } }",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/merchants/{{merchantId}}/withdrawals",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "merchants", "{{merchantId}}", "withdrawals" ]
+            },
+            "description": "A small ZAR payout routes to the priority-1 partner za-swift-eft."
+          }
+        },
+        {
+          "name": "Poll status → partnerCode za-swift-eft",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const url = pm.environment.get('baseUrl') + '/merchants/' + pm.environment.get('merchantId') + '/withdrawals/' + pm.environment.get('zarWithdrawalId');",
+                  "let attempts = 0;",
+                  "const poll = () => {",
+                  "  pm.sendRequest(url, (err, res) => {",
+                  "    attempts++;",
+                  "    const w = err ? null : res.json();",
+                  "    if (w && w.partnerCode) {",
+                  "      pm.test('routed to za-swift-eft', () => pm.expect(w.partnerCode).to.eql('za-swift-eft'));",
+                  "    } else if (attempts < 16) { setTimeout(poll, 250); }",
+                  "    else { pm.test('routed to za-swift-eft', () => pm.expect(w && w.partnerCode).to.eql('za-swift-eft')); }",
+                  "  });",
+                  "};",
+                  "poll();"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/merchants/{{merchantId}}/withdrawals/{{zarWithdrawalId}}",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "merchants", "{{merchantId}}", "withdrawals", "{{zarWithdrawalId}}" ]
+            }
+          }
+        },
+        {
+          "name": "Large ZAR withdrawal (>1000) → za-payfast",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": { "type": "text/javascript", "exec": [ "pm.environment.set('zarBigKey', pm.variables.replaceIn('{{$guid}}'));" ] }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('202 Accepted', () => pm.response.to.have.status(202));",
+                  "pm.environment.set('zarBigWithdrawalId', pm.response.json().withdrawalId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{zarBigKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"currency\": \"ZAR\", \"amount\": \"1500.00\", \"destination\": { \"accountNumber\": \"12345678\", \"bankCode\": \"632005\" } }",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/merchants/{{merchantId}}/withdrawals",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "merchants", "{{merchantId}}", "withdrawals" ]
+            },
+            "description": "Over za-swift-eft's 1000 cap, so routing bypasses it to za-payfast."
+          }
+        },
+        {
+          "name": "List payout partners",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('200 OK', () => pm.response.to.have.status(200));",
+                  "pm.test('registry has za-swift-eft', () => pm.expect(pm.response.json().map(p => p.code)).to.include('za-swift-eft'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/internal/payout-partners",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "internal", "payout-partners" ]
+            }
+          }
+        },
+        {
+          "name": "Disable za-swift-eft (health off) → 204",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": [ "pm.test('204 No Content', () => pm.response.to.have.status(204));" ] }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"healthy\": false }",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/internal/payout-partners/za-swift-eft",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "internal", "payout-partners", "za-swift-eft" ]
+            },
+            "description": "Toggling health off demonstrates live failover: subsequent small ZAR payouts route to za-payfast."
+          }
+        },
+        {
+          "name": "Re-enable za-swift-eft (health on) → 204",
+          "event": [
+            {
+              "listen": "test",
+              "script": { "type": "text/javascript", "exec": [ "pm.test('204 No Content', () => pm.response.to.have.status(204));" ] }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [ { "key": "Content-Type", "value": "application/json" } ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"healthy\": true }",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/internal/payout-partners/za-swift-eft",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "internal", "payout-partners", "za-swift-eft" ]
+            }
+          }
+        },
+        {
+          "name": "KES withdrawal → 422 NO_PAYOUT_ROUTE",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('422 Unprocessable', () => pm.response.to.have.status(422));",
+                  "pm.test('code NO_PAYOUT_ROUTE', () => pm.expect(pm.response.json().code).to.eql('NO_PAYOUT_ROUTE'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "kes-no-route" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{ \"currency\": \"KES\", \"amount\": \"100.00\", \"destination\": { \"accountNumber\": \"12345678\", \"bankCode\": \"111\" } }",
+              "options": { "raw": { "language": "json" } }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/merchants/{{merchantId}}/withdrawals",
+              "host": [ "{{baseUrl}}" ],
+              "path": [ "merchants", "{{merchantId}}", "withdrawals" ]
+            },
+            "description": "There is deliberately no KES partner, so the payout is unroutable and rejected before any funds are held."
           }
         }
       ]

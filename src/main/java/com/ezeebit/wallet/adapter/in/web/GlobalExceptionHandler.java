@@ -58,14 +58,15 @@ class GlobalExceptionHandler {
     private HttpStatus statusFor(String code) {
         return switch (code) {
             case "INSUFFICIENT_FUNDS", "CURRENCY_MISMATCH", "IDEMPOTENCY_CONFLICT",
-                 "WITHDRAWAL_LIMIT_EXCEEDED", "INVALID_DESTINATION" ->
+                 "WITHDRAWAL_LIMIT_EXCEEDED", "INVALID_DESTINATION", "NO_PAYOUT_ROUTE" ->
                     HttpStatus.UNPROCESSABLE_ENTITY;
-            case "ACCOUNT_NOT_FOUND", "QUOTE_NOT_FOUND", "WITHDRAWAL_NOT_FOUND" ->
+            case "ACCOUNT_NOT_FOUND", "QUOTE_NOT_FOUND", "WITHDRAWAL_NOT_FOUND", "PARTNER_NOT_FOUND" ->
                     HttpStatus.NOT_FOUND;
-            case "QUOTE_EXPIRED", "QUOTE_ALREADY_USED", "ILLEGAL_WITHDRAWAL_STATE", "CONCURRENT_REQUEST" ->
+            case "QUOTE_EXPIRED", "QUOTE_ALREADY_USED", "ILLEGAL_WITHDRAWAL_STATE", "CONCURRENT_REQUEST",
+                 "INCOMING_PAYMENT_CONFLICT" ->
                     HttpStatus.CONFLICT;
             case "INVALID_RATE" -> HttpStatus.BAD_GATEWAY;
-            case "RATE_UNAVAILABLE" -> HttpStatus.SERVICE_UNAVAILABLE;
+            case "RATE_UNAVAILABLE", "PARTNER_UNAVAILABLE" -> HttpStatus.SERVICE_UNAVAILABLE;
             default -> HttpStatus.BAD_REQUEST;
         };
     }

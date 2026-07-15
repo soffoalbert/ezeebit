@@ -30,7 +30,8 @@ class LedgerInvariantMonitor {
         this.violations = meters.gauge("wallet.ledger.invariant.violations", new AtomicInteger(0));
     }
 
-    @Scheduled(fixedDelayString = "${wallet.ledger.invariant-check-ms:300000}")
+    @Scheduled(fixedDelayString = "${wallet.ledger.invariant-check-ms:300000}",
+               initialDelayString = "${wallet.ledger.invariant-check-ms:300000}")
     void check() {
         List<BalanceDrift> drift = checker.findDrift(100);
         violations.set(drift.size());

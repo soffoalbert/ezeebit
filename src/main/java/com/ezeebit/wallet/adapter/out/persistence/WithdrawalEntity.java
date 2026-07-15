@@ -48,6 +48,9 @@ class WithdrawalEntity {
     @Column(name = "payout_reference", length = 120)
     private String payoutReference;
 
+    @Column(name = "partner_code", length = 40)
+    private String partnerCode;
+
     @Column(name = "failure_reason", length = 255)
     private String failureReason;
 
@@ -72,6 +75,7 @@ class WithdrawalEntity {
         e.destination = w.destination();
         e.status = w.status();
         e.payoutReference = w.payoutReference();
+        e.partnerCode = w.partnerCode();
         e.failureReason = w.failureReason();
         e.operationId = w.operationId().toString();
         e.createdAt = w.createdAt();
@@ -81,7 +85,7 @@ class WithdrawalEntity {
 
     Withdrawal toDomain() {
         return new Withdrawal(UUID.fromString(id), merchantId, idempotencyKey,
-                Money.of(amount, currency), destination, status, payoutReference,
+                Money.of(amount, currency), destination, status, payoutReference, partnerCode,
                 failureReason, UUID.fromString(operationId), createdAt, updatedAt);
     }
 }
